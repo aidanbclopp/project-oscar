@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
+#include "motor.h"
 #include "spi.h"
 #include "tim.h"
 #include "gpio.h"
@@ -35,7 +36,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define htim_mot_l htim2
+#define htim_mot_r htim3
+#define htim_enc_l htim4
+#define htim_enc_r htim1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -46,7 +50,20 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static Motor_t motor_l = {
+    .htim        = &htim_mot_l, 
+    .ch_fwd = L_MOT_FWD_Pin, 
+    .ch_bwd = L_MOT_BWD_Pin, 
+    .ch_en  = L_MOT_EN_Pin,
+    .enc_timer htim_enc_l
+};
+static Motor_t motor_r = {
+    .htim        = &htim_mot_r, 
+    .ch_fwd = R_MOT_FWD_Pin, 
+    .ch_bwd = R_MOT_BWD_Pin, 
+    .ch_en  = R_MOT_EN_Pin,
+    .enc_timer htim_enc_r
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,9 +111,10 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
-  MX_TIM5_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-
+  Motor_Init(motor_l);
+  Motor_Init(motor_r);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -105,6 +123,21 @@ int main(void)
   {
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
     HAL_Delay(500);
+
+    if (execute_user_routine) {
+      // TODO: set up STM32 on the board with robot and connect appropriate wires
+      // TODO: ensure safe power is provided
+      // TODO: verify this routine can be excuted
+
+      // Move 2 feet, spin 180 CW, move 2 feet, spin 180 CCW
+      // Robot should end in same position and orientation as start
+      Robot_MoveDistance(motor_l, motor_r, 800, 24);
+      Robot_Rotate(motor_l, motor_r, 800, -180);
+      Robot_MoveDistance(motor_l, motor_r, 800, 24);
+      Robot_Rotate(motor_l, motor_r, 800, 180);
+      execute_user_routine = 0;
+    }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -158,7 +191,13 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+volatile uint8_t execute_user_routine = 0;
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == USER_BTN_Pin) {
+        execute_user_routine = 1;
+    }
+}
 /* USER CODE END 4 */
 
 /**

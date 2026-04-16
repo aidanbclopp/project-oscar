@@ -31,7 +31,7 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "motor.h"
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -59,10 +59,9 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define LED_Pin GPIO_PIN_13
 #define LED_GPIO_Port GPIOC
-#define R_ENC_IN_Pin GPIO_PIN_0
-#define R_ENC_IN_GPIO_Port GPIOA
-#define L_MOT_BWD_Pin GPIO_PIN_1
-#define L_MOT_BWD_GPIO_Port GPIOA
+#define USER_BTN_Pin GPIO_PIN_0
+#define USER_BTN_GPIO_Port GPIOA
+#define USER_BTN_EXTI_IRQn EXTI0_IRQn
 #define L_MOT_EN_Pin GPIO_PIN_2
 #define L_MOT_EN_GPIO_Port GPIOA
 #define CC1101_CS_Pin GPIO_PIN_4
@@ -75,17 +74,20 @@ void Error_Handler(void);
 #define CC1101_MOSI_GPIO_Port GPIOA
 #define R_MOT_EN_Pin GPIO_PIN_0
 #define R_MOT_EN_GPIO_Port GPIOB
+#define GDO0_Pin GPIO_PIN_1
+#define GDO0_GPIO_Port GPIOB
+#define GDO0_EXTI_IRQn EXTI1_IRQn
+#define GDO2_Pin GPIO_PIN_2
+#define GDO2_GPIO_Port GPIOB
+#define GDO2_EXTI_IRQn EXTI2_IRQn
 #define L_MOT_FWD_Pin GPIO_PIN_15
 #define L_MOT_FWD_GPIO_Port GPIOA
-#define CC1101_GD0_Pin GPIO_PIN_3
-#define CC1101_GD0_GPIO_Port GPIOB
-#define CC1101_GD0_EXTI_IRQn EXTI3_IRQn
+#define L_MOT_BWD_Pin GPIO_PIN_3
+#define L_MOT_BWD_GPIO_Port GPIOB
 #define R_MOT_FWD_Pin GPIO_PIN_4
 #define R_MOT_FWD_GPIO_Port GPIOB
 #define R_MOT_BWD_Pin GPIO_PIN_5
 #define R_MOT_BWD_GPIO_Port GPIOB
-#define L_ENC_IN_Pin GPIO_PIN_6
-#define L_ENC_IN_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
