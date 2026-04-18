@@ -35,13 +35,13 @@ typedef struct {
 
 void Motor_Init(Motor_t* motor);
 
-void Motor_SetSpeed(Motor_t* motor, uint16_t speed);
+void Motor_SetSpeed(Motor_t* motor, int16_t speed);
 void Motor_Stop(Motor_t* motor);
 
 void Motor_ResetDistance(Motor_t* motor);
 int32_t Motor_GetTicks(Motor_t* motor);
 
-void Robot_MoveDistance(Motor_t* motor_l, Motor_t* motor_r, uint16_t speed, float inches);
-void Robot_Rotate(Motor_t* motor_l, Motor_t* motor_r, uint16_t speed, float degrees);
+void Robot_MoveDistance(Motor_t* motor_l, Motor_t* motor_r, int16_t speed, float inches);
+void Robot_Rotate(Motor_t* motor_l, Motor_t* motor_r, int16_t speed, float degrees);
 
 #endif /*__ MOTOR_H__ */

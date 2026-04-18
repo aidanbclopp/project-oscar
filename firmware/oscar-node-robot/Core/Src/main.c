@@ -51,19 +51,20 @@
 
 /* USER CODE BEGIN PV */
 static Motor_t motor_l = {
-    .htim        = &htim_mot_l, 
-    .ch_fwd = L_MOT_FWD_Pin, 
-    .ch_bwd = L_MOT_BWD_Pin, 
-    .ch_en  = L_MOT_EN_Pin,
-    .enc_timer htim_enc_l
+    .htim = &htim_mot_l, 
+    .ch_fwd = TIM_CHANNEL_1,
+    .ch_bwd = TIM_CHANNEL_2,
+    .ch_en  = TIM_CHANNEL_3,
+    .enc_timer = &htim_enc_l
 };
 static Motor_t motor_r = {
-    .htim        = &htim_mot_r, 
-    .ch_fwd = R_MOT_FWD_Pin, 
-    .ch_bwd = R_MOT_BWD_Pin, 
-    .ch_en  = R_MOT_EN_Pin,
-    .enc_timer htim_enc_r
+    .htim = &htim_mot_r, 
+    .ch_fwd = TIM_CHANNEL_1,
+    .ch_bwd = TIM_CHANNEL_2,
+    .ch_en  = TIM_CHANNEL_3,
+    .enc_timer = &htim_enc_r
 };
+volatile uint8_t execute_user_routine = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,7 +86,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -113,8 +113,8 @@ int main(void)
   MX_TIM4_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  Motor_Init(motor_l);
-  Motor_Init(motor_r);
+  Motor_Init(&motor_l);
+  Motor_Init(&motor_r);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -131,10 +131,10 @@ int main(void)
 
       // Move 2 feet, spin 180 CW, move 2 feet, spin 180 CCW
       // Robot should end in same position and orientation as start
-      Robot_MoveDistance(motor_l, motor_r, 800, 24);
-      Robot_Rotate(motor_l, motor_r, 800, -180);
-      Robot_MoveDistance(motor_l, motor_r, 800, 24);
-      Robot_Rotate(motor_l, motor_r, 800, 180);
+      Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
+      Robot_Rotate(&motor_l, &motor_r, 800, -180);
+      Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
+      Robot_Rotate(&motor_l, &motor_r, 800, 180);
       execute_user_routine = 0;
     }
 
@@ -191,10 +191,10 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-volatile uint8_t execute_user_routine = 0;
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    if (GPIO_Pin == USER_BTN_Pin) {
+    if (GPIO_Pin == USER_BTN_Pin &&
+        HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin) == GPIO_PIN_RESET) {
         execute_user_routine = 1;
     }
 }
