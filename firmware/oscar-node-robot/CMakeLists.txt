@@ -20,6 +20,7 @@ endif()
 
 # Set the project name
 set(CMAKE_PROJECT_NAME oscar-node-robot)
+option(OSCAR_ENABLE_PERSISTENT_LOGS "Enable persistent on-chip logging support" ON)
 
 # Enable compile command to ease indexing with e.g. clangd
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
@@ -45,6 +46,10 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    Core/Src/bno055.c
+    Core/Src/log_runtime.c
+    Core/Src/log_store.c
+    Core/Src/motor.c
 )
 
 # Add include paths
@@ -57,6 +62,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
 )
+if(OSCAR_ENABLE_PERSISTENT_LOGS)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OSCAR_ENABLE_PERSISTENT_LOGS=1)
+else()
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OSCAR_ENABLE_PERSISTENT_LOGS=0)
+endif()
 
 # Remove wrong libob.a library dependency when using cpp files
 list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)

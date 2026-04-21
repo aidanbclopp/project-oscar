@@ -56,12 +56,16 @@ ENTRY(Reset_Handler)
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 64K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 256K
+FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 128K
+LOGFLASH (rw)   : ORIGIN = 0x8020000, LENGTH = 128K
 }
 
 /* Highest address of the user mode stack */
 _estack = ORIGIN(RAM) + LENGTH(RAM);    /* end of RAM */
 _sstack = _estack - _Min_Stack_Size;
+_log_flash_start = ORIGIN(LOGFLASH);
+_log_flash_end = ORIGIN(LOGFLASH) + LENGTH(LOGFLASH);
+_log_flash_size = LENGTH(LOGFLASH);
 /* Generate a link error if heap and stack don't fit into RAM */
 _Min_Heap_Size = 0x200;      /* required amount of heap  */
 _Min_Stack_Size = 0x400; /* required amount of stack */
