@@ -30,10 +30,30 @@
 #include <sys/time.h>
 #include <sys/times.h>
 
+#include "log_runtime.h"
 
 /* Variables */
 extern int __io_putchar(int ch) __attribute__((weak));
 extern int __io_getchar(void) __attribute__((weak));
+
+__attribute__((weak)) int __io_putchar(int ch)
+{
+  /* Only issue semihosting calls when a debugger is attached. */
+  if (((*(volatile unsigned int *)0xE000EDF0U) & 0x1U) != 0U)
+  {
+    char c = (char)ch;
+    register int op asm("r0") = 0x03; /* SYS_WRITEC */
+    register char *msg asm("r1") = &c;
+    asm volatile ("bkpt 0xAB" : : "r" (op), "r" (msg) : "memory");
+  }
+
+  return ch;
+}
+
+__attribute__((weak)) int __io_getchar(void)
+{
+  return -1;
+}
 
 
 char *__env[1] = { 0 };
@@ -41,7 +61,7 @@ char **environ = __env;
 
 
 /* Functions */
-void initialise_monitor_handles()
+__attribute__((weak)) void initialise_monitor_handles(void)
 {
 }
 
@@ -79,13 +99,23 @@ __attribute__((weak)) int _read(int file, char *ptr, int len)
 
 __attribute__((weak)) int _write(int file, char *ptr, int len)
 {
-  (void)file;
-  int DataIdx;
+  LogRuntime_Write((const uint8_t *)ptr, (uint16_t)len);
 
-  for (DataIdx = 0; DataIdx < len; DataIdx++)
+  if (((*(volatile unsigned int *)0xE000EDF0U) & 0x1U) != 0U)
   {
-    __io_putchar(*ptr++);
+    int args[3];
+    register int op asm("r0") = 0x05; /* SYS_WRITE */
+    register int *block asm("r1") = args;
+
+    args[0] = file;
+    args[1] = (int)ptr;
+    args[2] = len;
+
+    asm volatile ("bkpt 0xAB" : "+r" (op) : "r" (block) : "memory");
+    return len - op;
   }
+
+  /* No debugger attached: drop output instead of faulting. */
   return len;
 }
 

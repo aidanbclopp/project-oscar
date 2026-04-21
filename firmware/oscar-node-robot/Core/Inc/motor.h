@@ -21,6 +21,7 @@
 
 #include "stm32f4xx_hal.h"
 #include "constants.h"
+#include "bno055.h"
 
 #define PWM_PERIOD 1000
 
@@ -33,6 +34,24 @@ typedef struct {
     int32_t last_position;
 } Motor_t;
 
+typedef enum {
+    ROBOT_CTRL_OK = 0,
+    ROBOT_CTRL_IMU_ERROR,
+    ROBOT_CTRL_TIMEOUT,
+    ROBOT_CTRL_PARAM_ERROR
+} RobotControlStatus_t;
+
+typedef struct {
+    float kp;
+    float kd;
+    float corr_max;
+    float heading_tolerance_deg;
+    float rotate_kp;
+    int16_t rotate_min_speed;
+    uint32_t sample_period_ms;
+    uint32_t timeout_ms;
+} HeadingControlConfig_t;
+
 void Motor_Init(Motor_t* motor);
 
 void Motor_SetSpeed(Motor_t* motor, int16_t speed);
@@ -43,5 +62,20 @@ int32_t Motor_GetTicks(Motor_t* motor);
 
 void Robot_MoveDistance(Motor_t* motor_l, Motor_t* motor_r, int16_t speed, float inches);
 void Robot_Rotate(Motor_t* motor_l, Motor_t* motor_r, int16_t speed, float degrees);
+void HeadingControl_GetDefaultConfig(HeadingControlConfig_t* cfg);
+RobotControlStatus_t Robot_MoveDistanceHeadingHold(
+    Motor_t* motor_l,
+    Motor_t* motor_r,
+    BNO055_t* imu,
+    const HeadingControlConfig_t* cfg,
+    int16_t speed,
+    float inches);
+RobotControlStatus_t Robot_RotateToDeltaHeading(
+    Motor_t* motor_l,
+    Motor_t* motor_r,
+    BNO055_t* imu,
+    const HeadingControlConfig_t* cfg,
+    int16_t speed,
+    float delta_degrees);
 
 #endif /*__ MOTOR_H__ */

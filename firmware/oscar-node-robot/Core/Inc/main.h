@@ -84,6 +84,8 @@ void Error_Handler(void);
 #define R_ENC1_GPIO_Port GPIOA
 #define R_ENC2_Pin GPIO_PIN_9
 #define R_ENC2_GPIO_Port GPIOA
+#define BNO055_ON_Pin GPIO_PIN_12
+#define BNO055_ON_GPIO_Port GPIOA
 #define L_MOT_FWD_Pin GPIO_PIN_15
 #define L_MOT_FWD_GPIO_Port GPIOA
 #define L_MOT_BWD_Pin GPIO_PIN_3

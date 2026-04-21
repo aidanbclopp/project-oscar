@@ -43,6 +43,13 @@
 #define htim_mot_r htim3
 #define htim_enc_l htim4
 #define htim_enc_r htim1
+#define IMU_CALIB_TIMEOUT_MS 10000U
+#define IMU_CALIB_SAMPLE_MS  100U
+#define IMU_GYRO_ONLY_WAIT_MS 3000U
+#define IMU_CALIB_MIN_SYS    2U
+#define IMU_CALIB_MIN_GYRO   3U
+#define IMU_CALIB_MIN_ACCEL  2U
+#define IMU_CALIB_MIN_MAG    2U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -67,7 +74,11 @@ static Motor_t motor_r = {
     .ch_en  = TIM_CHANNEL_3,
     .enc_timer = &htim_enc_r
 };
+static BNO055_t bno055;
+static HeadingControlConfig_t heading_cfg;
+static uint8_t imu_ready = 0;
 volatile uint8_t execute_user_routine = 0;
+static uint8_t imu_init_ok = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -78,6 +89,113 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void Main_SetImuStatusLed(uint8_t on)
+{
+  /* PA12 status LED is wired active-high on this board. */
+  HAL_GPIO_WritePin(BNO055_ON_GPIO_Port, BNO055_ON_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
+
+static void Main_UpdateImuReady(void)
+{
+  uint8_t sys_calib = 0U;
+  uint8_t gyro_calib = 0U;
+
+  if (!imu_init_ok) {
+    imu_ready = 0U;
+    Main_SetImuStatusLed(0U);
+    return;
+  }
+
+  if (BNO055_ReadCalibStatus(&bno055, &sys_calib, &gyro_calib, NULL, NULL) != BNO055_OK) {
+    imu_ready = 0U;
+    Main_SetImuStatusLed(0U);
+    printf("[MAIN] imu calib read failed\r\n");
+    return;
+  }
+
+  imu_ready = (gyro_calib >= BNO055_MIN_GYRO_CALIB) ? 1U : 0U;
+  Main_SetImuStatusLed(imu_ready);
+  printf("[MAIN] imu calib sys=%u gyro=%u minGyroCal=%u imu_ready=%u\r\n",
+         (unsigned int)sys_calib,
+         (unsigned int)gyro_calib,
+         (unsigned int)BNO055_MIN_GYRO_CALIB,
+         (unsigned int)imu_ready);
+}
+
+static uint8_t Main_RunImuCalibrationSequence(void)
+{
+  uint32_t start_ms = HAL_GetTick();
+  uint32_t last_hint_ms = 0U;
+  uint8_t sys_calib = 0U;
+  uint8_t gyro_calib = 0U;
+  uint8_t accel_calib = 0U;
+  uint8_t mag_calib = 0U;
+  uint8_t led_state = 0U;
+
+  if (!imu_init_ok) {
+    imu_ready = 0U;
+    Main_SetImuStatusLed(0U);
+    printf("[MAIN] imu calibration skipped (imu init failed)\r\n");
+    return 0U;
+  }
+
+  printf("[MAIN] imu calibration sequence start\r\n");
+  while (1) {
+    uint32_t elapsed_ms = HAL_GetTick() - start_ms;
+
+    if (elapsed_ms >= IMU_CALIB_TIMEOUT_MS) {
+      break;
+    }
+
+    if (BNO055_ReadCalibStatus(&bno055, &sys_calib, &gyro_calib, &accel_calib, &mag_calib) != BNO055_OK) {
+      imu_ready = 0U;
+      Main_SetImuStatusLed(0U);
+      printf("[MAIN] imu calibration status read failed\r\n");
+      return 0U;
+    }
+
+    printf("[MAIN] calib sys=%u gyro=%u accel=%u mag=%u\r\n",
+           (unsigned int)sys_calib,
+           (unsigned int)gyro_calib,
+           (unsigned int)accel_calib,
+           (unsigned int)mag_calib);
+
+    if ((sys_calib >= IMU_CALIB_MIN_SYS) &&
+        (gyro_calib >= IMU_CALIB_MIN_GYRO) &&
+        (accel_calib >= IMU_CALIB_MIN_ACCEL) &&
+        (mag_calib >= IMU_CALIB_MIN_MAG)) {
+      imu_ready = 1U;
+      Main_SetImuStatusLed(1U);
+      printf("[MAIN] imu calibration ready\r\n");
+      return 1U;
+    }
+
+    if ((elapsed_ms >= IMU_GYRO_ONLY_WAIT_MS) &&
+        (gyro_calib >= IMU_CALIB_MIN_GYRO)) {
+      imu_ready = 1U;
+      Main_SetImuStatusLed(1U);
+      printf("[MAIN] imu gyro-only ready (sys=%u accel=%u mag=%u)\r\n",
+             (unsigned int)sys_calib,
+             (unsigned int)accel_calib,
+             (unsigned int)mag_calib);
+      return 1U;
+    }
+
+    if ((elapsed_ms - last_hint_ms) >= 1000U) {
+      printf("[MAIN] calibrating... keep robot still, then tilt/rotate slowly for accel/mag\r\n");
+      last_hint_ms = elapsed_ms;
+    }
+
+    led_state ^= 1U;
+    Main_SetImuStatusLed(led_state);
+    HAL_Delay(IMU_CALIB_SAMPLE_MS);
+  }
+
+  imu_ready = 0U;
+  Main_SetImuStatusLed(0U);
+  printf("[MAIN] imu calibration timeout (using encoder-only)\r\n");
+  return 0U;
+}
 
 /* USER CODE END 0 */
 
@@ -97,7 +215,6 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -117,8 +234,27 @@ int main(void)
   MX_TIM1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  LogRuntime_Init();
+  LogRuntime_RefreshViews(16U);
+  printf("[MAIN] persistent flash log initialized\r\n");
+
+  BNO055_MountConfig_t mount_cfg;
+  BNO055_GetDefaultMountConfig(&mount_cfg);
+  mount_cfg.heading_axis = BNO055_AXIS_HEADING;
+  mount_cfg.heading_sign = 1;
+  mount_cfg.heading_offset_deg = 0.0f;
+
+  imu_init_ok = (BNO055_Init(&bno055, &hi2c1, BNO055_I2C_ADDR_LOW, &mount_cfg) == BNO055_OK) ? 1U : 0U;
+  Main_UpdateImuReady();
+  printf("[MAIN] imu_init_ok=%u imu_ready=%u minGyroCal=%u\r\n",
+         (unsigned int)imu_init_ok,
+         (unsigned int)imu_ready,
+         (unsigned int)BNO055_MIN_GYRO_CALIB);
+
+  HeadingControl_GetDefaultConfig(&heading_cfg);
   Motor_Init(&motor_l);
   Motor_Init(&motor_r);
+  printf("[MAIN] motor init complete\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -127,19 +263,27 @@ int main(void)
   {
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
     HAL_Delay(500);
+    LogRuntime_RefreshViews(16U);
 
     if (execute_user_routine) {
-      // TODO: set up STM32 on the board with robot and connect appropriate wires
-      // TODO: ensure safe power is provided
-      // TODO: verify this routine can be excuted
-
-      // Move 2 feet, spin 180 CW, move 2 feet, spin 180 CCW
-      // Robot should end in same position and orientation as start
-      Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
-      Robot_Rotate(&motor_l, &motor_r, 800, -180);
-      Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
-      Robot_Rotate(&motor_l, &motor_r, 800, 180);
+      (void)Main_RunImuCalibrationSequence();
+      Main_SetImuStatusLed(imu_ready);
+      printf("[MAIN] user routine start imuMode=%s\r\n", imu_ready ? "heading-hold" : "encoder-only");
+      // Move 2 feet, spin 180 CW, move 2 feet, spin 180 CCW.
+      // Robot should end in same position and orientation as start.
+      if (imu_ready) {
+        (void)Robot_MoveDistanceHeadingHold(&motor_l, &motor_r, &bno055, &heading_cfg, 800, 24);
+        (void)Robot_RotateToDeltaHeading(&motor_l, &motor_r, &bno055, &heading_cfg, 800, -180);
+        (void)Robot_MoveDistanceHeadingHold(&motor_l, &motor_r, &bno055, &heading_cfg, 800, 24);
+        (void)Robot_RotateToDeltaHeading(&motor_l, &motor_r, &bno055, &heading_cfg, 800, 180);
+      } else {
+        Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
+        Robot_Rotate(&motor_l, &motor_r, 800, -180);
+        Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
+        Robot_Rotate(&motor_l, &motor_r, 800, 180);
+      }
       execute_user_routine = 0;
+      printf("[MAIN] user routine complete\r\n");
     }
 
     /* USER CODE END WHILE */
@@ -200,6 +344,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     if (GPIO_Pin == USER_BTN_Pin &&
         HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin) == GPIO_PIN_RESET) {
         execute_user_routine = 1;
+        printf("[MAIN] user button pressed\r\n");
     }
 }
 /* USER CODE END 4 */
