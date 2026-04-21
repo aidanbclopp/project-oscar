@@ -80,6 +80,10 @@ void Error_Handler(void);
 #define GDO2_Pin GPIO_PIN_2
 #define GDO2_GPIO_Port GPIOB
 #define GDO2_EXTI_IRQn EXTI2_IRQn
+#define R_ENC1_Pin GPIO_PIN_8
+#define R_ENC1_GPIO_Port GPIOA
+#define R_ENC2_Pin GPIO_PIN_9
+#define R_ENC2_GPIO_Port GPIOA
 #define L_MOT_FWD_Pin GPIO_PIN_15
 #define L_MOT_FWD_GPIO_Port GPIOA
 #define L_MOT_BWD_Pin GPIO_PIN_3
@@ -88,6 +92,14 @@ void Error_Handler(void);
 #define R_MOT_FWD_GPIO_Port GPIOB
 #define R_MOT_BWD_Pin GPIO_PIN_5
 #define R_MOT_BWD_GPIO_Port GPIOB
+#define L_ENC1_Pin GPIO_PIN_6
+#define L_ENC1_GPIO_Port GPIOB
+#define L_ENC2_Pin GPIO_PIN_7
+#define L_ENC2_GPIO_Port GPIOB
+#define BNO055_SCL_Pin GPIO_PIN_8
+#define BNO055_SCL_GPIO_Port GPIOB
+#define BNO055_SDA_Pin GPIO_PIN_9
+#define BNO055_SDA_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
