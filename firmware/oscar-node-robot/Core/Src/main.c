@@ -27,6 +27,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bno055.h"
+#include "cc1101.h"
 #include "log_runtime.h"
 #include "motor.h"
 #include <stdio.h>
@@ -50,6 +51,12 @@
 #define IMU_CALIB_MIN_GYRO   3U
 #define IMU_CALIB_MIN_ACCEL  2U
 #define IMU_CALIB_MIN_MAG    2U
+#define RADIO_DRIVE_SPEED            700
+#define RADIO_TURN_SPEED             650
+#define RADIO_CMD_HOLD_TIMEOUT_MS    200U
+#define MAIN_LED_BLINK_PERIOD_MS     500U
+#define MAIN_VIEW_REFRESH_MS         100U
+#define RADIO_EDGE_QUEUE_SIZE        128U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -79,6 +86,18 @@ static HeadingControlConfig_t heading_cfg;
 static uint8_t imu_ready = 0;
 volatile uint8_t execute_user_routine = 0;
 static uint8_t imu_init_ok = 0;
+static uint8_t radio_link_ready = 0;
+static uint8_t radio_motion_active = 0;
+static uint32_t radio_last_cmd_ms = 0U;
+static uint32_t cpu_cycles_per_us = 0U;
+typedef struct {
+  uint32_t ts_us;
+  uint8_t level;
+} RadioEdge_t;
+static volatile RadioEdge_t radio_edge_queue[RADIO_EDGE_QUEUE_SIZE];
+static volatile uint16_t radio_edge_head = 0U;
+static volatile uint16_t radio_edge_tail = 0U;
+static volatile uint8_t radio_edge_overflow = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -197,6 +216,105 @@ static uint8_t Main_RunImuCalibrationSequence(void)
   return 0U;
 }
 
+static void Main_EnableCycleCounter(void)
+{
+  cpu_cycles_per_us = HAL_RCC_GetHCLKFreq() / 1000000U;
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+  DWT->CYCCNT = 0U;
+  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+static uint32_t Main_GetMicros(void)
+{
+  if (cpu_cycles_per_us == 0U) {
+    return HAL_GetTick() * 1000U;
+  }
+  return DWT->CYCCNT / cpu_cycles_per_us;
+}
+
+static void Main_ApplyRadioCommand(CC1101_Command_t cmd)
+{
+  if (cmd == CC1101_CMD_NONE) {
+    Motor_Stop(&motor_l);
+    Motor_Stop(&motor_r);
+    radio_motion_active = 0U;
+    return;
+  }
+
+  switch (cmd) {
+    case CC1101_CMD_FORWARD:
+      Motor_SetSpeed(&motor_l, RADIO_DRIVE_SPEED);
+      Motor_SetSpeed(&motor_r, RADIO_DRIVE_SPEED);
+      radio_motion_active = 1U;
+      break;
+    case CC1101_CMD_BACKWARD:
+      Motor_SetSpeed(&motor_l, -RADIO_DRIVE_SPEED);
+      Motor_SetSpeed(&motor_r, -RADIO_DRIVE_SPEED);
+      radio_motion_active = 1U;
+      break;
+    case CC1101_CMD_LEFT:
+      Motor_SetSpeed(&motor_l, -RADIO_TURN_SPEED);
+      Motor_SetSpeed(&motor_r, RADIO_TURN_SPEED);
+      radio_motion_active = 1U;
+      break;
+    case CC1101_CMD_RIGHT:
+      Motor_SetSpeed(&motor_l, RADIO_TURN_SPEED);
+      Motor_SetSpeed(&motor_r, -RADIO_TURN_SPEED);
+      radio_motion_active = 1U;
+      break;
+    case CC1101_CMD_STOP:
+    default:
+      Motor_Stop(&motor_l);
+      Motor_Stop(&motor_r);
+      radio_motion_active = 0U;
+      break;
+  }
+}
+
+static void Main_ProcessRadioRx(void)
+{
+  if (!radio_link_ready) {
+    return;
+  }
+
+  while (radio_edge_tail != radio_edge_head) {
+    RadioEdge_t edge;
+    CC1101_Command_t cmd;
+    HAL_StatusTypeDef hal;
+    uint32_t now_ms = HAL_GetTick();
+
+    __disable_irq();
+    edge = radio_edge_queue[radio_edge_tail];
+    radio_edge_tail = (uint16_t)((radio_edge_tail + 1U) % RADIO_EDGE_QUEUE_SIZE);
+    __enable_irq();
+
+    cmd = CC1101_CMD_NONE;
+    hal = CC1101_FeedEdge(edge.level, edge.ts_us, &cmd);
+    if ((hal == HAL_OK) && (cmd != CC1101_CMD_NONE)) {
+      Main_ApplyRadioCommand(cmd);
+      radio_last_cmd_ms = now_ms;
+      printf("[RADIO] cmd=%s\r\n", CC1101_CommandToString(cmd));
+    }
+  }
+
+  if (radio_edge_overflow != 0U) {
+    radio_edge_overflow = 0U;
+    printf("[RADIO] edge queue overflow\r\n");
+  }
+}
+
+static void Main_RadioSafetyStopCheck(uint32_t now_ms)
+{
+  if (!radio_motion_active) {
+    return;
+  }
+
+  if ((now_ms - radio_last_cmd_ms) > RADIO_CMD_HOLD_TIMEOUT_MS) {
+    Main_ApplyRadioCommand(CC1101_CMD_STOP);
+    printf("[RADIO] hold timeout -> STOP\r\n");
+  }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -221,7 +339,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  Main_EnableCycleCounter();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -255,17 +373,45 @@ int main(void)
   Motor_Init(&motor_l);
   Motor_Init(&motor_r);
   printf("[MAIN] motor init complete\r\n");
+
+  CC1101_AttachSpi(&hspi1);
+  if (CC1101_InitForFlipperRemote() == HAL_OK) {
+    if (CC1101_StartRx() == HAL_OK) {
+      radio_link_ready = 1U;
+      __HAL_GPIO_EXTI_CLEAR_IT(GDO0_Pin);
+      HAL_NVIC_ClearPendingIRQ(EXTI1_IRQn);
+      HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+      printf("[RADIO] cc1101 ready in RX mode\r\n");
+    } else {
+      printf("[RADIO] failed to enter RX mode\r\n");
+    }
+  } else {
+    printf("[RADIO] cc1101 init failed\r\n");
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-    HAL_Delay(500);
-    LogRuntime_RefreshViews(16U);
+    static uint32_t last_led_ms = 0U;
+    static uint32_t last_view_ms = 0U;
+    uint32_t now_ms = HAL_GetTick();
 
-    if (execute_user_routine) {
+    if ((now_ms - last_led_ms) >= MAIN_LED_BLINK_PERIOD_MS) {
+      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+      last_led_ms = now_ms;
+    }
+
+    if ((now_ms - last_view_ms) >= MAIN_VIEW_REFRESH_MS) {
+      LogRuntime_RefreshViews(16U);
+      last_view_ms = now_ms;
+    }
+
+    Main_ProcessRadioRx();
+    Main_RadioSafetyStopCheck(now_ms);
+
+    if (execute_user_routine && !radio_motion_active) {
       (void)Main_RunImuCalibrationSequence();
       Main_SetImuStatusLed(imu_ready);
       printf("[MAIN] user routine start imuMode=%s\r\n", imu_ready ? "heading-hold" : "encoder-only");
@@ -285,6 +431,8 @@ int main(void)
       execute_user_routine = 0;
       printf("[MAIN] user routine complete\r\n");
     }
+
+    HAL_Delay(2);
 
     /* USER CODE END WHILE */
 
@@ -345,6 +493,17 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin) == GPIO_PIN_RESET) {
         execute_user_routine = 1;
         printf("[MAIN] user button pressed\r\n");
+    } else if ((GPIO_Pin == GDO0_Pin) && (radio_link_ready != 0U)) {
+        uint16_t next_head = (uint16_t)((radio_edge_head + 1U) % RADIO_EDGE_QUEUE_SIZE);
+        uint8_t level = (HAL_GPIO_ReadPin(GDO0_GPIO_Port, GDO0_Pin) == GPIO_PIN_SET) ? 1U : 0U;
+        uint32_t ts_us = Main_GetMicros();
+        if (next_head == radio_edge_tail) {
+            radio_edge_overflow = 1U;
+            return;
+        }
+        radio_edge_queue[radio_edge_head].level = level;
+        radio_edge_queue[radio_edge_head].ts_us = ts_us;
+        radio_edge_head = next_head;
     }
 }
 /* USER CODE END 4 */
