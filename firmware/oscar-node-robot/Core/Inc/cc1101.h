@@ -14,6 +14,7 @@ typedef enum {
     CC1101_CMD_BACKWARD,
     CC1101_CMD_LEFT,
     CC1101_CMD_RIGHT,
+    CC1101_CMD_CENTER,
     CC1101_CMD_STOP
 } CC1101_Command_t;
 

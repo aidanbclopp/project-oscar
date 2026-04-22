@@ -51,12 +51,15 @@
 #define IMU_CALIB_MIN_GYRO   3U
 #define IMU_CALIB_MIN_ACCEL  2U
 #define IMU_CALIB_MIN_MAG    2U
-#define RADIO_DRIVE_SPEED            700
-#define RADIO_TURN_SPEED             650
-#define RADIO_CMD_HOLD_TIMEOUT_MS    200U
+#define RADIO_MACRO_SPEED            800
+#define RADIO_MACRO_MOVE_INCHES      12.0f
+#define RADIO_MACRO_TURN_DEG         90.0f
+#define RADIO_CMD_LOG_PERIOD_MS      250U
+#define RADIO_OVERFLOW_LOG_PERIOD_MS 1000U
 #define MAIN_LED_BLINK_PERIOD_MS     500U
 #define MAIN_VIEW_REFRESH_MS         100U
-#define RADIO_EDGE_QUEUE_SIZE        128U
+#define RADIO_EDGE_QUEUE_SIZE        512U
+#define RADIO_EDGE_MIN_DELTA_US      140U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -87,8 +90,11 @@ static uint8_t imu_ready = 0;
 volatile uint8_t execute_user_routine = 0;
 static uint8_t imu_init_ok = 0;
 static uint8_t radio_link_ready = 0;
-static uint8_t radio_motion_active = 0;
-static uint32_t radio_last_cmd_ms = 0U;
+static volatile uint8_t radio_macro_busy = 0U;
+static CC1101_Command_t radio_last_logged_cmd = CC1101_CMD_NONE;
+static uint32_t radio_last_log_ms = 0U;
+static uint32_t radio_last_overflow_log_ms = 0U;
+static uint32_t radio_overflow_count = 0U;
 static uint32_t cpu_cycles_per_us = 0U;
 typedef struct {
   uint32_t ts_us;
@@ -98,6 +104,7 @@ static volatile RadioEdge_t radio_edge_queue[RADIO_EDGE_QUEUE_SIZE];
 static volatile uint16_t radio_edge_head = 0U;
 static volatile uint16_t radio_edge_tail = 0U;
 static volatile uint8_t radio_edge_overflow = 0U;
+static volatile uint32_t radio_last_edge_ts_us = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -232,43 +239,63 @@ static uint32_t Main_GetMicros(void)
   return DWT->CYCCNT / cpu_cycles_per_us;
 }
 
-static void Main_ApplyRadioCommand(CC1101_Command_t cmd)
+static void Main_ExecuteRadioDiscrete(CC1101_Command_t cmd)
 {
-  if (cmd == CC1101_CMD_NONE) {
-    Motor_Stop(&motor_l);
-    Motor_Stop(&motor_r);
-    radio_motion_active = 0U;
+  Motor_Stop(&motor_l);
+  Motor_Stop(&motor_r);
+
+  if (cmd == CC1101_CMD_STOP) {
     return;
   }
 
+  radio_macro_busy = 1U;
+
   switch (cmd) {
     case CC1101_CMD_FORWARD:
-      Motor_SetSpeed(&motor_l, RADIO_DRIVE_SPEED);
-      Motor_SetSpeed(&motor_r, RADIO_DRIVE_SPEED);
-      radio_motion_active = 1U;
+      if (imu_ready) {
+        (void)Robot_MoveDistanceHeadingHold(
+            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, RADIO_MACRO_MOVE_INCHES);
+      } else {
+        Robot_MoveDistance(&motor_l, &motor_r, RADIO_MACRO_SPEED, RADIO_MACRO_MOVE_INCHES);
+      }
       break;
     case CC1101_CMD_BACKWARD:
-      Motor_SetSpeed(&motor_l, -RADIO_DRIVE_SPEED);
-      Motor_SetSpeed(&motor_r, -RADIO_DRIVE_SPEED);
-      radio_motion_active = 1U;
+      if (imu_ready) {
+        (void)Robot_MoveDistanceHeadingHold(
+            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, -RADIO_MACRO_MOVE_INCHES);
+      } else {
+        Robot_MoveDistance(&motor_l, &motor_r, RADIO_MACRO_SPEED, -RADIO_MACRO_MOVE_INCHES);
+      }
       break;
     case CC1101_CMD_LEFT:
-      Motor_SetSpeed(&motor_l, -RADIO_TURN_SPEED);
-      Motor_SetSpeed(&motor_r, RADIO_TURN_SPEED);
-      radio_motion_active = 1U;
+      if (imu_ready) {
+        (void)Robot_RotateToDeltaHeading(
+            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, RADIO_MACRO_TURN_DEG);
+      } else {
+        Robot_Rotate(&motor_l, &motor_r, RADIO_MACRO_SPEED, RADIO_MACRO_TURN_DEG);
+      }
       break;
     case CC1101_CMD_RIGHT:
-      Motor_SetSpeed(&motor_l, RADIO_TURN_SPEED);
-      Motor_SetSpeed(&motor_r, -RADIO_TURN_SPEED);
-      radio_motion_active = 1U;
+      if (imu_ready) {
+        (void)Robot_RotateToDeltaHeading(
+            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, -RADIO_MACRO_TURN_DEG);
+      } else {
+        Robot_Rotate(&motor_l, &motor_r, RADIO_MACRO_SPEED, -RADIO_MACRO_TURN_DEG);
+      }
       break;
-    case CC1101_CMD_STOP:
+    case CC1101_CMD_CENTER:
+      if (imu_ready) {
+        (void)Robot_RotateToDeltaHeading(
+            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, -360.0f);
+      } else {
+        Robot_Rotate(&motor_l, &motor_r, RADIO_MACRO_SPEED, -360.0f);
+      }
+      break;
     default:
-      Motor_Stop(&motor_l);
-      Motor_Stop(&motor_r);
-      radio_motion_active = 0U;
       break;
   }
+
+  radio_macro_busy = 0U;
 }
 
 static void Main_ProcessRadioRx(void)
@@ -291,27 +318,30 @@ static void Main_ProcessRadioRx(void)
     cmd = CC1101_CMD_NONE;
     hal = CC1101_FeedEdge(edge.level, edge.ts_us, &cmd);
     if ((hal == HAL_OK) && (cmd != CC1101_CMD_NONE)) {
-      Main_ApplyRadioCommand(cmd);
-      radio_last_cmd_ms = now_ms;
-      printf("[RADIO] cmd=%s\r\n", CC1101_CommandToString(cmd));
+      if (radio_macro_busy && (cmd != CC1101_CMD_STOP)) {
+        continue;
+      }
+      if ((cmd != radio_last_logged_cmd) || ((now_ms - radio_last_log_ms) >= RADIO_CMD_LOG_PERIOD_MS)) {
+        printf("[RADIO] cmd=%s\r\n", CC1101_CommandToString(cmd));
+        radio_last_logged_cmd = cmd;
+        radio_last_log_ms = now_ms;
+      }
+      Main_ExecuteRadioDiscrete(cmd);
     }
   }
 
   if (radio_edge_overflow != 0U) {
+    __disable_irq();
+    radio_edge_tail = radio_edge_head;
+    __enable_irq();
     radio_edge_overflow = 0U;
-    printf("[RADIO] edge queue overflow\r\n");
-  }
-}
-
-static void Main_RadioSafetyStopCheck(uint32_t now_ms)
-{
-  if (!radio_motion_active) {
-    return;
+    radio_overflow_count++;
   }
 
-  if ((now_ms - radio_last_cmd_ms) > RADIO_CMD_HOLD_TIMEOUT_MS) {
-    Main_ApplyRadioCommand(CC1101_CMD_STOP);
-    printf("[RADIO] hold timeout -> STOP\r\n");
+  if ((radio_overflow_count != 0U) && ((HAL_GetTick() - radio_last_overflow_log_ms) >= RADIO_OVERFLOW_LOG_PERIOD_MS)) {
+    printf("[RADIO] edge queue overflow x%lu\r\n", (unsigned long)radio_overflow_count);
+    radio_overflow_count = 0U;
+    radio_last_overflow_log_ms = HAL_GetTick();
   }
 }
 
@@ -398,6 +428,8 @@ int main(void)
     static uint32_t last_view_ms = 0U;
     uint32_t now_ms = HAL_GetTick();
 
+    Main_ProcessRadioRx();
+
     if ((now_ms - last_led_ms) >= MAIN_LED_BLINK_PERIOD_MS) {
       HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
       last_led_ms = now_ms;
@@ -408,10 +440,7 @@ int main(void)
       last_view_ms = now_ms;
     }
 
-    Main_ProcessRadioRx();
-    Main_RadioSafetyStopCheck(now_ms);
-
-    if (execute_user_routine && !radio_motion_active) {
+    if (execute_user_routine && !radio_macro_busy) {
       (void)Main_RunImuCalibrationSequence();
       Main_SetImuStatusLed(imu_ready);
       printf("[MAIN] user routine start imuMode=%s\r\n", imu_ready ? "heading-hold" : "encoder-only");
@@ -432,7 +461,7 @@ int main(void)
       printf("[MAIN] user routine complete\r\n");
     }
 
-    HAL_Delay(2);
+    HAL_Delay(1);
 
     /* USER CODE END WHILE */
 
@@ -497,9 +526,19 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         uint16_t next_head = (uint16_t)((radio_edge_head + 1U) % RADIO_EDGE_QUEUE_SIZE);
         uint8_t level = (HAL_GPIO_ReadPin(GDO0_GPIO_Port, GDO0_Pin) == GPIO_PIN_SET) ? 1U : 0U;
         uint32_t ts_us = Main_GetMicros();
-        if (next_head == radio_edge_tail) {
-            radio_edge_overflow = 1U;
+        uint32_t edge_dt_us = ts_us - radio_last_edge_ts_us;
+
+        /* Princeton symbols are >=150us; ignore very short glitches/noise edges. */
+        if ((radio_last_edge_ts_us != 0U) && (edge_dt_us < RADIO_EDGE_MIN_DELTA_US)) {
             return;
+        }
+        radio_last_edge_ts_us = ts_us;
+
+        if (next_head == radio_edge_tail) {
+            /* Drop the oldest edge so new timing stays current. */
+            radio_edge_tail = (uint16_t)((radio_edge_tail + 1U) % RADIO_EDGE_QUEUE_SIZE);
+            radio_edge_overflow = 1U;
+            next_head = (uint16_t)((radio_edge_head + 1U) % RADIO_EDGE_QUEUE_SIZE);
         }
         radio_edge_queue[radio_edge_head].level = level;
         radio_edge_queue[radio_edge_head].ts_us = ts_us;

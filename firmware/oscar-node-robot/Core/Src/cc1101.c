@@ -41,17 +41,18 @@
 #define CC1101_MISO_WAIT_TIMEOUT  10U
 
 #define PRINCETON_BITS                 24U
-#define PRINCETON_SHORT_MIN_US         150U
-#define PRINCETON_SHORT_MAX_US         750U
-#define PRINCETON_LONG_MIN_US          750U
-#define PRINCETON_LONG_MAX_US          1650U
-#define PRINCETON_SYNC_GAP_MIN_US      8000U
+#define PRINCETON_SHORT_MIN_US         180U
+#define PRINCETON_SHORT_MAX_US         700U
+#define PRINCETON_LONG_MIN_US          700U
+#define PRINCETON_LONG_MAX_US          1900U
+#define PRINCETON_SYNC_GAP_MIN_US      4500U
 
 /* These match the .sub files proposed in chat. */
 #define FLIPPER_CODE_FORWARD_24   0xC30111UL
 #define FLIPPER_CODE_BACKWARD_24  0xC30222UL
 #define FLIPPER_CODE_LEFT_24      0xC30333UL
 #define FLIPPER_CODE_RIGHT_24     0xC30444UL
+#define FLIPPER_CODE_CENTER_24    0xC30555UL
 #define FLIPPER_CODE_STOP_24      0xC30FFFUL
 
 typedef struct {
@@ -160,6 +161,8 @@ static void Princeton_Reset(PrincetonDecoderState_t* st)
     st->has_high_low = 0U;
     st->bit_count = 0U;
     st->assembled_code = 0U;
+    st->high_us = 0U;
+    st->low_us = 0U;
 }
 
 static uint32_t Princeton_Reverse24(uint32_t value)
@@ -314,6 +317,8 @@ HAL_StatusTypeDef CC1101_FeedEdge(uint8_t level, uint32_t timestamp_us, CC1101_C
 
     if (dt_us >= PRINCETON_SYNC_GAP_MIN_US) {
         Princeton_Reset(&s_princeton);
+        s_princeton.prev_level = level;
+        return HAL_BUSY;
     }
 
     if (prior_level != 0U) {
@@ -365,6 +370,8 @@ CC1101_Command_t CC1101_MapCodeToCommand(uint32_t code24)
             return CC1101_CMD_LEFT;
         case FLIPPER_CODE_RIGHT_24:
             return CC1101_CMD_RIGHT;
+        case FLIPPER_CODE_CENTER_24:
+            return CC1101_CMD_CENTER;
         case FLIPPER_CODE_STOP_24:
             return CC1101_CMD_STOP;
         default:
@@ -383,6 +390,8 @@ const char* CC1101_CommandToString(CC1101_Command_t cmd)
             return "LEFT";
         case CC1101_CMD_RIGHT:
             return "RIGHT";
+        case CC1101_CMD_CENTER:
+            return "CENTER";
         case CC1101_CMD_STOP:
             return "STOP";
         default:
