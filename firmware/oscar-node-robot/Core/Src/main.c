@@ -26,40 +26,15 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "bno055.h"
-#include "cc1101.h"
-#include "log_runtime.h"
-#include "motor.h"
-#include <stdio.h>
+#include "robot_app.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define htim_mot_l htim2
-#define htim_mot_r htim3
-#define htim_enc_l htim4
-#define htim_enc_r htim1
-#define IMU_CALIB_TIMEOUT_MS 10000U
-#define IMU_CALIB_SAMPLE_MS  100U
-#define IMU_GYRO_ONLY_WAIT_MS 3000U
-#define IMU_CALIB_MIN_SYS    2U
-#define IMU_CALIB_MIN_GYRO   3U
-#define IMU_CALIB_MIN_ACCEL  2U
-#define IMU_CALIB_MIN_MAG    2U
-#define RADIO_MACRO_SPEED            800
-#define RADIO_MACRO_MOVE_INCHES      12.0f
-#define RADIO_MACRO_TURN_DEG         90.0f
-#define RADIO_CMD_LOG_PERIOD_MS      250U
-#define RADIO_OVERFLOW_LOG_PERIOD_MS 1000U
-#define MAIN_LED_BLINK_PERIOD_MS     500U
-#define MAIN_VIEW_REFRESH_MS         100U
-#define RADIO_EDGE_QUEUE_SIZE        512U
-#define RADIO_EDGE_MIN_DELTA_US      140U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -70,41 +45,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static Motor_t motor_l = {
-    .htim = &htim_mot_l, 
-    .ch_fwd = TIM_CHANNEL_1,
-    .ch_bwd = TIM_CHANNEL_2,
-    .ch_en  = TIM_CHANNEL_3,
-    .enc_timer = &htim_enc_l
-};
-static Motor_t motor_r = {
-    .htim = &htim_mot_r, 
-    .ch_fwd = TIM_CHANNEL_1,
-    .ch_bwd = TIM_CHANNEL_2,
-    .ch_en  = TIM_CHANNEL_3,
-    .enc_timer = &htim_enc_r
-};
-static BNO055_t bno055;
-static HeadingControlConfig_t heading_cfg;
-static uint8_t imu_ready = 0;
-volatile uint8_t execute_user_routine = 0;
-static uint8_t imu_init_ok = 0;
-static uint8_t radio_link_ready = 0;
-static volatile uint8_t radio_macro_busy = 0U;
-static CC1101_Command_t radio_last_logged_cmd = CC1101_CMD_NONE;
-static uint32_t radio_last_log_ms = 0U;
-static uint32_t radio_last_overflow_log_ms = 0U;
-static uint32_t radio_overflow_count = 0U;
-static uint32_t cpu_cycles_per_us = 0U;
-typedef struct {
-  uint32_t ts_us;
-  uint8_t level;
-} RadioEdge_t;
-static volatile RadioEdge_t radio_edge_queue[RADIO_EDGE_QUEUE_SIZE];
-static volatile uint16_t radio_edge_head = 0U;
-static volatile uint16_t radio_edge_tail = 0U;
-static volatile uint8_t radio_edge_overflow = 0U;
-static volatile uint32_t radio_last_edge_ts_us = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -115,236 +55,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void Main_SetImuStatusLed(uint8_t on)
-{
-  /* PA12 status LED is wired active-high on this board. */
-  HAL_GPIO_WritePin(BNO055_ON_GPIO_Port, BNO055_ON_Pin, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
-
-static void Main_UpdateImuReady(void)
-{
-  uint8_t sys_calib = 0U;
-  uint8_t gyro_calib = 0U;
-
-  if (!imu_init_ok) {
-    imu_ready = 0U;
-    Main_SetImuStatusLed(0U);
-    return;
-  }
-
-  if (BNO055_ReadCalibStatus(&bno055, &sys_calib, &gyro_calib, NULL, NULL) != BNO055_OK) {
-    imu_ready = 0U;
-    Main_SetImuStatusLed(0U);
-    printf("[MAIN] imu calib read failed\r\n");
-    return;
-  }
-
-  imu_ready = (gyro_calib >= BNO055_MIN_GYRO_CALIB) ? 1U : 0U;
-  Main_SetImuStatusLed(imu_ready);
-  printf("[MAIN] imu calib sys=%u gyro=%u minGyroCal=%u imu_ready=%u\r\n",
-         (unsigned int)sys_calib,
-         (unsigned int)gyro_calib,
-         (unsigned int)BNO055_MIN_GYRO_CALIB,
-         (unsigned int)imu_ready);
-}
-
-static uint8_t Main_RunImuCalibrationSequence(void)
-{
-  uint32_t start_ms = HAL_GetTick();
-  uint32_t last_hint_ms = 0U;
-  uint8_t sys_calib = 0U;
-  uint8_t gyro_calib = 0U;
-  uint8_t accel_calib = 0U;
-  uint8_t mag_calib = 0U;
-  uint8_t led_state = 0U;
-
-  if (!imu_init_ok) {
-    imu_ready = 0U;
-    Main_SetImuStatusLed(0U);
-    printf("[MAIN] imu calibration skipped (imu init failed)\r\n");
-    return 0U;
-  }
-
-  printf("[MAIN] imu calibration sequence start\r\n");
-  while (1) {
-    uint32_t elapsed_ms = HAL_GetTick() - start_ms;
-
-    if (elapsed_ms >= IMU_CALIB_TIMEOUT_MS) {
-      break;
-    }
-
-    if (BNO055_ReadCalibStatus(&bno055, &sys_calib, &gyro_calib, &accel_calib, &mag_calib) != BNO055_OK) {
-      imu_ready = 0U;
-      Main_SetImuStatusLed(0U);
-      printf("[MAIN] imu calibration status read failed\r\n");
-      return 0U;
-    }
-
-    printf("[MAIN] calib sys=%u gyro=%u accel=%u mag=%u\r\n",
-           (unsigned int)sys_calib,
-           (unsigned int)gyro_calib,
-           (unsigned int)accel_calib,
-           (unsigned int)mag_calib);
-
-    if ((sys_calib >= IMU_CALIB_MIN_SYS) &&
-        (gyro_calib >= IMU_CALIB_MIN_GYRO) &&
-        (accel_calib >= IMU_CALIB_MIN_ACCEL) &&
-        (mag_calib >= IMU_CALIB_MIN_MAG)) {
-      imu_ready = 1U;
-      Main_SetImuStatusLed(1U);
-      printf("[MAIN] imu calibration ready\r\n");
-      return 1U;
-    }
-
-    if ((elapsed_ms >= IMU_GYRO_ONLY_WAIT_MS) &&
-        (gyro_calib >= IMU_CALIB_MIN_GYRO)) {
-      imu_ready = 1U;
-      Main_SetImuStatusLed(1U);
-      printf("[MAIN] imu gyro-only ready (sys=%u accel=%u mag=%u)\r\n",
-             (unsigned int)sys_calib,
-             (unsigned int)accel_calib,
-             (unsigned int)mag_calib);
-      return 1U;
-    }
-
-    if ((elapsed_ms - last_hint_ms) >= 1000U) {
-      printf("[MAIN] calibrating... keep robot still, then tilt/rotate slowly for accel/mag\r\n");
-      last_hint_ms = elapsed_ms;
-    }
-
-    led_state ^= 1U;
-    Main_SetImuStatusLed(led_state);
-    HAL_Delay(IMU_CALIB_SAMPLE_MS);
-  }
-
-  imu_ready = 0U;
-  Main_SetImuStatusLed(0U);
-  printf("[MAIN] imu calibration timeout (using encoder-only)\r\n");
-  return 0U;
-}
-
-static void Main_EnableCycleCounter(void)
-{
-  cpu_cycles_per_us = HAL_RCC_GetHCLKFreq() / 1000000U;
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-  DWT->CYCCNT = 0U;
-  DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-}
-
-static uint32_t Main_GetMicros(void)
-{
-  if (cpu_cycles_per_us == 0U) {
-    return HAL_GetTick() * 1000U;
-  }
-  return DWT->CYCCNT / cpu_cycles_per_us;
-}
-
-static void Main_ExecuteRadioDiscrete(CC1101_Command_t cmd)
-{
-  Motor_Stop(&motor_l);
-  Motor_Stop(&motor_r);
-
-  if (cmd == CC1101_CMD_STOP) {
-    return;
-  }
-
-  radio_macro_busy = 1U;
-
-  switch (cmd) {
-    case CC1101_CMD_FORWARD:
-      if (imu_ready) {
-        (void)Robot_MoveDistanceHeadingHold(
-            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, RADIO_MACRO_MOVE_INCHES);
-      } else {
-        Robot_MoveDistance(&motor_l, &motor_r, RADIO_MACRO_SPEED, RADIO_MACRO_MOVE_INCHES);
-      }
-      break;
-    case CC1101_CMD_BACKWARD:
-      if (imu_ready) {
-        (void)Robot_MoveDistanceHeadingHold(
-            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, -RADIO_MACRO_MOVE_INCHES);
-      } else {
-        Robot_MoveDistance(&motor_l, &motor_r, RADIO_MACRO_SPEED, -RADIO_MACRO_MOVE_INCHES);
-      }
-      break;
-    case CC1101_CMD_LEFT:
-      if (imu_ready) {
-        (void)Robot_RotateToDeltaHeading(
-            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, RADIO_MACRO_TURN_DEG);
-      } else {
-        Robot_Rotate(&motor_l, &motor_r, RADIO_MACRO_SPEED, RADIO_MACRO_TURN_DEG);
-      }
-      break;
-    case CC1101_CMD_RIGHT:
-      if (imu_ready) {
-        (void)Robot_RotateToDeltaHeading(
-            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, -RADIO_MACRO_TURN_DEG);
-      } else {
-        Robot_Rotate(&motor_l, &motor_r, RADIO_MACRO_SPEED, -RADIO_MACRO_TURN_DEG);
-      }
-      break;
-    case CC1101_CMD_CENTER:
-      if (imu_ready) {
-        (void)Robot_RotateToDeltaHeading(
-            &motor_l, &motor_r, &bno055, &heading_cfg, RADIO_MACRO_SPEED, -360.0f);
-      } else {
-        Robot_Rotate(&motor_l, &motor_r, RADIO_MACRO_SPEED, -360.0f);
-      }
-      break;
-    default:
-      break;
-  }
-
-  radio_macro_busy = 0U;
-}
-
-static void Main_ProcessRadioRx(void)
-{
-  if (!radio_link_ready) {
-    return;
-  }
-
-  while (radio_edge_tail != radio_edge_head) {
-    RadioEdge_t edge;
-    CC1101_Command_t cmd;
-    HAL_StatusTypeDef hal;
-    uint32_t now_ms = HAL_GetTick();
-
-    __disable_irq();
-    edge = radio_edge_queue[radio_edge_tail];
-    radio_edge_tail = (uint16_t)((radio_edge_tail + 1U) % RADIO_EDGE_QUEUE_SIZE);
-    __enable_irq();
-
-    cmd = CC1101_CMD_NONE;
-    hal = CC1101_FeedEdge(edge.level, edge.ts_us, &cmd);
-    if ((hal == HAL_OK) && (cmd != CC1101_CMD_NONE)) {
-      if (radio_macro_busy && (cmd != CC1101_CMD_STOP)) {
-        continue;
-      }
-      if ((cmd != radio_last_logged_cmd) || ((now_ms - radio_last_log_ms) >= RADIO_CMD_LOG_PERIOD_MS)) {
-        printf("[RADIO] cmd=%s\r\n", CC1101_CommandToString(cmd));
-        radio_last_logged_cmd = cmd;
-        radio_last_log_ms = now_ms;
-      }
-      Main_ExecuteRadioDiscrete(cmd);
-    }
-  }
-
-  if (radio_edge_overflow != 0U) {
-    __disable_irq();
-    radio_edge_tail = radio_edge_head;
-    __enable_irq();
-    radio_edge_overflow = 0U;
-    radio_overflow_count++;
-  }
-
-  if ((radio_overflow_count != 0U) && ((HAL_GetTick() - radio_last_overflow_log_ms) >= RADIO_OVERFLOW_LOG_PERIOD_MS)) {
-    printf("[RADIO] edge queue overflow x%lu\r\n", (unsigned long)radio_overflow_count);
-    radio_overflow_count = 0U;
-    radio_last_overflow_log_ms = HAL_GetTick();
-  }
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -369,7 +79,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-  Main_EnableCycleCounter();
+  RobotApp_EnableCycleCounter();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -382,86 +92,14 @@ int main(void)
   MX_TIM1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  LogRuntime_Init();
-  LogRuntime_RefreshViews(16U);
-  printf("[MAIN] persistent flash log initialized\r\n");
-
-  BNO055_MountConfig_t mount_cfg;
-  BNO055_GetDefaultMountConfig(&mount_cfg);
-  mount_cfg.heading_axis = BNO055_AXIS_HEADING;
-  mount_cfg.heading_sign = 1;
-  mount_cfg.heading_offset_deg = 0.0f;
-
-  imu_init_ok = (BNO055_Init(&bno055, &hi2c1, BNO055_I2C_ADDR_LOW, &mount_cfg) == BNO055_OK) ? 1U : 0U;
-  Main_UpdateImuReady();
-  printf("[MAIN] imu_init_ok=%u imu_ready=%u minGyroCal=%u\r\n",
-         (unsigned int)imu_init_ok,
-         (unsigned int)imu_ready,
-         (unsigned int)BNO055_MIN_GYRO_CALIB);
-
-  HeadingControl_GetDefaultConfig(&heading_cfg);
-  Motor_Init(&motor_l);
-  Motor_Init(&motor_r);
-  printf("[MAIN] motor init complete\r\n");
-
-  CC1101_AttachSpi(&hspi1);
-  if (CC1101_InitForFlipperRemote() == HAL_OK) {
-    if (CC1101_StartRx() == HAL_OK) {
-      radio_link_ready = 1U;
-      __HAL_GPIO_EXTI_CLEAR_IT(GDO0_Pin);
-      HAL_NVIC_ClearPendingIRQ(EXTI1_IRQn);
-      HAL_NVIC_EnableIRQ(EXTI1_IRQn);
-      printf("[RADIO] cc1101 ready in RX mode\r\n");
-    } else {
-      printf("[RADIO] failed to enter RX mode\r\n");
-    }
-  } else {
-    printf("[RADIO] cc1101 init failed\r\n");
-  }
+  RobotApp_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    static uint32_t last_led_ms = 0U;
-    static uint32_t last_view_ms = 0U;
-    uint32_t now_ms = HAL_GetTick();
-
-    Main_ProcessRadioRx();
-
-    if ((now_ms - last_led_ms) >= MAIN_LED_BLINK_PERIOD_MS) {
-      HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-      last_led_ms = now_ms;
-    }
-
-    if ((now_ms - last_view_ms) >= MAIN_VIEW_REFRESH_MS) {
-      LogRuntime_RefreshViews(16U);
-      last_view_ms = now_ms;
-    }
-
-    if (execute_user_routine && !radio_macro_busy) {
-      (void)Main_RunImuCalibrationSequence();
-      Main_SetImuStatusLed(imu_ready);
-      printf("[MAIN] user routine start imuMode=%s\r\n", imu_ready ? "heading-hold" : "encoder-only");
-      // Move 2 feet, spin 180 CW, move 2 feet, spin 180 CCW.
-      // Robot should end in same position and orientation as start.
-      if (imu_ready) {
-        (void)Robot_MoveDistanceHeadingHold(&motor_l, &motor_r, &bno055, &heading_cfg, 800, 24);
-        (void)Robot_RotateToDeltaHeading(&motor_l, &motor_r, &bno055, &heading_cfg, 800, -180);
-        (void)Robot_MoveDistanceHeadingHold(&motor_l, &motor_r, &bno055, &heading_cfg, 800, 24);
-        (void)Robot_RotateToDeltaHeading(&motor_l, &motor_r, &bno055, &heading_cfg, 800, 180);
-      } else {
-        Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
-        Robot_Rotate(&motor_l, &motor_r, 800, -180);
-        Robot_MoveDistance(&motor_l, &motor_r, 800, 24);
-        Robot_Rotate(&motor_l, &motor_r, 800, 180);
-      }
-      execute_user_routine = 0;
-      printf("[MAIN] user routine complete\r\n");
-    }
-
-    HAL_Delay(1);
+    RobotApp_Tick();
 
     /* USER CODE END WHILE */
 
@@ -518,32 +156,7 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    if (GPIO_Pin == USER_BTN_Pin &&
-        HAL_GPIO_ReadPin(USER_BTN_GPIO_Port, USER_BTN_Pin) == GPIO_PIN_RESET) {
-        execute_user_routine = 1;
-        printf("[MAIN] user button pressed\r\n");
-    } else if ((GPIO_Pin == GDO0_Pin) && (radio_link_ready != 0U)) {
-        uint16_t next_head = (uint16_t)((radio_edge_head + 1U) % RADIO_EDGE_QUEUE_SIZE);
-        uint8_t level = (HAL_GPIO_ReadPin(GDO0_GPIO_Port, GDO0_Pin) == GPIO_PIN_SET) ? 1U : 0U;
-        uint32_t ts_us = Main_GetMicros();
-        uint32_t edge_dt_us = ts_us - radio_last_edge_ts_us;
-
-        /* Princeton symbols are >=150us; ignore very short glitches/noise edges. */
-        if ((radio_last_edge_ts_us != 0U) && (edge_dt_us < RADIO_EDGE_MIN_DELTA_US)) {
-            return;
-        }
-        radio_last_edge_ts_us = ts_us;
-
-        if (next_head == radio_edge_tail) {
-            /* Drop the oldest edge so new timing stays current. */
-            radio_edge_tail = (uint16_t)((radio_edge_tail + 1U) % RADIO_EDGE_QUEUE_SIZE);
-            radio_edge_overflow = 1U;
-            next_head = (uint16_t)((radio_edge_head + 1U) % RADIO_EDGE_QUEUE_SIZE);
-        }
-        radio_edge_queue[radio_edge_head].level = level;
-        radio_edge_queue[radio_edge_head].ts_us = ts_us;
-        radio_edge_head = next_head;
-    }
+  RobotApp_OnGpioExti(GPIO_Pin);
 }
 /* USER CODE END 4 */
 

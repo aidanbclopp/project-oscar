@@ -62,6 +62,8 @@ void Error_Handler(void);
 #define USER_BTN_Pin GPIO_PIN_0
 #define USER_BTN_GPIO_Port GPIOA
 #define USER_BTN_EXTI_IRQn EXTI0_IRQn
+#define RADIO_STATUS_Pin GPIO_PIN_1
+#define RADIO_STATUS_GPIO_Port GPIOA
 #define L_MOT_EN_Pin GPIO_PIN_2
 #define L_MOT_EN_GPIO_Port GPIOA
 #define CC1101_CS_Pin GPIO_PIN_4
@@ -98,12 +100,16 @@ void Error_Handler(void);
 #define L_ENC1_GPIO_Port GPIOB
 #define L_ENC2_Pin GPIO_PIN_7
 #define L_ENC2_GPIO_Port GPIOB
+#define ENC_STATUS_Pin GPIO_PIN_15
+#define ENC_STATUS_GPIO_Port GPIOB
 #define BNO055_SCL_Pin GPIO_PIN_8
 #define BNO055_SCL_GPIO_Port GPIOB
 #define BNO055_SDA_Pin GPIO_PIN_9
 #define BNO055_SDA_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+/* Toggle persistent flash logging here: 1U=enabled, 0U=disabled. */
+#define OSCAR_ENABLE_PERSISTENT_LOGS 0U
 
 /* USER CODE END Private defines */
 

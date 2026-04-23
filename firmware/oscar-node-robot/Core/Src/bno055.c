@@ -1,6 +1,5 @@
 #include "bno055.h"
 
-#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +20,14 @@
 #define BNO055_PWR_NORMAL       0x00U
 #define BNO055_MODE_CONFIG      0x00U
 #define BNO055_MODE_NDOF        0x0CU
+#define BNO055_SYS_TRIGGER_RST  0x20U
+#define BNO055_UNIT_SEL_DEG     0x00U
+
+#define BNO055_BOOT_RETRY_DELAY_MS   650U
+#define BNO055_RESET_SETTLE_DELAY_MS 700U
+#define BNO055_CONFIG_MODE_DELAY_MS  20U
+#define BNO055_PWR_MODE_DELAY_MS     10U
+#define BNO055_UNIT_SEL_DELAY_MS     10U
 
 static float BNO055_NormalizeSignedDeg(float deg)
 {
@@ -49,6 +56,69 @@ static BNO055_Status_t BNO055_ReadRegs(BNO055_t* imu, uint8_t reg, uint8_t* data
     return BNO055_OK;
 }
 
+static void BNO055_SetMountConfig(BNO055_t* imu, const BNO055_MountConfig_t* mount_cfg)
+{
+    BNO055_MountConfig_t default_cfg;
+
+    if (mount_cfg != NULL) {
+        imu->mount_cfg = *mount_cfg;
+    } else {
+        BNO055_GetDefaultMountConfig(&default_cfg);
+        imu->mount_cfg = default_cfg;
+    }
+
+    if (imu->mount_cfg.heading_sign == 0) {
+        imu->mount_cfg.heading_sign = 1;
+    }
+}
+
+static BNO055_Status_t BNO055_ReadAndCheckChipId(BNO055_t* imu, const char* fail_tag)
+{
+    uint8_t chip_id = 0U;
+
+    if (BNO055_ReadRegs(imu, BNO055_REG_CHIP_ID, &chip_id, 1U) != BNO055_OK) {
+        printf("[BNO055] %s chip-id read failed\r\n", fail_tag);
+        return BNO055_ERR_I2C;
+    }
+    if (chip_id != BNO055_CHIP_ID) {
+        printf("[BNO055] %s unexpected chip-id=0x%02X\r\n", fail_tag, chip_id);
+        return BNO055_ERR_CHIP_ID;
+    }
+    return BNO055_OK;
+}
+
+static BNO055_Status_t BNO055_EnterConfigMode(BNO055_t* imu)
+{
+    if (BNO055_WriteReg(imu, BNO055_REG_OPR_MODE, BNO055_MODE_CONFIG) != BNO055_OK) {
+        return BNO055_ERR_I2C;
+    }
+    HAL_Delay(BNO055_CONFIG_MODE_DELAY_MS);
+    return BNO055_OK;
+}
+
+static BNO055_Status_t BNO055_ResetAndWait(BNO055_t* imu)
+{
+    if (BNO055_WriteReg(imu, BNO055_REG_SYS_TRIGGER, BNO055_SYS_TRIGGER_RST) != BNO055_OK) {
+        return BNO055_ERR_I2C;
+    }
+    HAL_Delay(BNO055_RESET_SETTLE_DELAY_MS);
+    return BNO055_OK;
+}
+
+static BNO055_Status_t BNO055_ConfigureUnitsAndPower(BNO055_t* imu)
+{
+    if (BNO055_WriteReg(imu, BNO055_REG_PWR_MODE, BNO055_PWR_NORMAL) != BNO055_OK) {
+        return BNO055_ERR_I2C;
+    }
+    HAL_Delay(BNO055_PWR_MODE_DELAY_MS);
+
+    if (BNO055_WriteReg(imu, BNO055_REG_UNIT_SEL, BNO055_UNIT_SEL_DEG) != BNO055_OK) {
+        return BNO055_ERR_I2C;
+    }
+    HAL_Delay(BNO055_UNIT_SEL_DELAY_MS);
+    return BNO055_OK;
+}
+
 void BNO055_GetDefaultMountConfig(BNO055_MountConfig_t* cfg)
 {
     if (cfg == NULL) {
@@ -69,20 +139,19 @@ BNO055_Status_t BNO055_SetModeNDOF(BNO055_t* imu)
     if (BNO055_WriteReg(imu, BNO055_REG_OPR_MODE, BNO055_MODE_CONFIG) != BNO055_OK) {
         return BNO055_ERR_I2C;
     }
-    HAL_Delay(20);
+    HAL_Delay(BNO055_CONFIG_MODE_DELAY_MS);
 
     if (BNO055_WriteReg(imu, BNO055_REG_OPR_MODE, BNO055_MODE_NDOF) != BNO055_OK) {
         return BNO055_ERR_I2C;
     }
-    HAL_Delay(20);
+    HAL_Delay(BNO055_CONFIG_MODE_DELAY_MS);
 
     return BNO055_OK;
 }
 
 BNO055_Status_t BNO055_Init(BNO055_t* imu, I2C_HandleTypeDef* hi2c, uint16_t i2c_addr, const BNO055_MountConfig_t* mount_cfg)
 {
-    uint8_t chip_id = 0;
-    BNO055_MountConfig_t default_cfg;
+    BNO055_Status_t st;
 
     if ((imu == NULL) || (hi2c == NULL)) {
         return BNO055_ERR_PARAM;
@@ -91,64 +160,33 @@ BNO055_Status_t BNO055_Init(BNO055_t* imu, I2C_HandleTypeDef* hi2c, uint16_t i2c
     memset(imu, 0, sizeof(*imu));
     imu->hi2c = hi2c;
     imu->i2c_addr = i2c_addr;
-
-    if (mount_cfg != NULL) {
-        imu->mount_cfg = *mount_cfg;
-    } else {
-        BNO055_GetDefaultMountConfig(&default_cfg);
-        imu->mount_cfg = default_cfg;
-    }
-
-    if (imu->mount_cfg.heading_sign == 0) {
-        imu->mount_cfg.heading_sign = 1;
-    }
+    BNO055_SetMountConfig(imu, mount_cfg);
 
     printf("[BNO055] init start addr=0x%02X\r\n", (unsigned int)(i2c_addr >> 1));
 
-    if (BNO055_ReadRegs(imu, BNO055_REG_CHIP_ID, &chip_id, 1U) != BNO055_OK) {
-        printf("[BNO055] chip-id read failed\r\n");
-        return BNO055_ERR_I2C;
+    /* Init sequence mirrors datasheet flow: identify -> reset -> configure -> run. */
+    st = BNO055_ReadAndCheckChipId(imu, "initial");
+    if (st == BNO055_ERR_CHIP_ID) {
+        HAL_Delay(BNO055_BOOT_RETRY_DELAY_MS);
+        st = BNO055_ReadAndCheckChipId(imu, "retry");
     }
-    if (chip_id != BNO055_CHIP_ID) {
-        HAL_Delay(650);
-        if (BNO055_ReadRegs(imu, BNO055_REG_CHIP_ID, &chip_id, 1U) != BNO055_OK) {
-            printf("[BNO055] retry chip-id read failed\r\n");
-            return BNO055_ERR_I2C;
-        }
-        if (chip_id != BNO055_CHIP_ID) {
-            printf("[BNO055] unexpected chip-id=0x%02X\r\n", chip_id);
-            return BNO055_ERR_CHIP_ID;
-        }
+    if (st != BNO055_OK) {
+        return st;
     }
 
-    if (BNO055_WriteReg(imu, BNO055_REG_OPR_MODE, BNO055_MODE_CONFIG) != BNO055_OK) {
+    if (BNO055_EnterConfigMode(imu) != BNO055_OK) {
         return BNO055_ERR_I2C;
     }
-    HAL_Delay(20);
-
-    if (BNO055_WriteReg(imu, BNO055_REG_SYS_TRIGGER, 0x20U) != BNO055_OK) {
+    if (BNO055_ResetAndWait(imu) != BNO055_OK) {
         return BNO055_ERR_I2C;
     }
-    HAL_Delay(700);
-
-    if (BNO055_ReadRegs(imu, BNO055_REG_CHIP_ID, &chip_id, 1U) != BNO055_OK) {
-        printf("[BNO055] post-reset chip-id read failed\r\n");
+    st = BNO055_ReadAndCheckChipId(imu, "post-reset");
+    if (st != BNO055_OK) {
+        return st;
+    }
+    if (BNO055_ConfigureUnitsAndPower(imu) != BNO055_OK) {
         return BNO055_ERR_I2C;
     }
-    if (chip_id != BNO055_CHIP_ID) {
-        printf("[BNO055] post-reset chip-id mismatch=0x%02X\r\n", chip_id);
-        return BNO055_ERR_CHIP_ID;
-    }
-
-    if (BNO055_WriteReg(imu, BNO055_REG_PWR_MODE, BNO055_PWR_NORMAL) != BNO055_OK) {
-        return BNO055_ERR_I2C;
-    }
-    HAL_Delay(10);
-
-    if (BNO055_WriteReg(imu, BNO055_REG_UNIT_SEL, 0x00U) != BNO055_OK) {
-        return BNO055_ERR_I2C;
-    }
-    HAL_Delay(10);
 
     if (BNO055_SetModeNDOF(imu) != BNO055_OK) {
         printf("[BNO055] failed to enter NDOF mode\r\n");

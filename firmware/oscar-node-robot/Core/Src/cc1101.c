@@ -65,7 +65,6 @@ static SPI_HandleTypeDef* s_hspi = NULL;
 typedef struct {
     uint8_t has_prev_edge;
     uint8_t prev_level;
-    uint8_t has_high_low;
     uint8_t bit_count;
     uint32_t prev_ts_us;
     uint32_t high_us;
@@ -158,7 +157,6 @@ static uint8_t CC1101_IsLongPulse(uint32_t duration_us)
 
 static void Princeton_Reset(PrincetonDecoderState_t* st)
 {
-    st->has_high_low = 0U;
     st->bit_count = 0U;
     st->assembled_code = 0U;
     st->high_us = 0U;
@@ -179,10 +177,6 @@ static uint32_t Princeton_Reverse24(uint32_t value)
 
 static uint8_t Princeton_DecodeSymbol(PrincetonDecoderState_t* st, uint8_t* out_bit)
 {
-    if (!st->has_high_low) {
-        return 0U;
-    }
-
     if (CC1101_IsShortPulse(st->high_us) && CC1101_IsLongPulse(st->low_us)) {
         *out_bit = 0U;
         return 1U;
@@ -192,6 +186,47 @@ static uint8_t Princeton_DecodeSymbol(PrincetonDecoderState_t* st, uint8_t* out_
         return 1U;
     }
     return 0U;
+}
+
+static CC1101_Command_t CC1101_MapCodeToCommand(uint32_t code24)
+{
+    switch (code24 & 0xFFFFFFUL) {
+        case FLIPPER_CODE_FORWARD_24:
+            return CC1101_CMD_FORWARD;
+        case FLIPPER_CODE_BACKWARD_24:
+            return CC1101_CMD_BACKWARD;
+        case FLIPPER_CODE_LEFT_24:
+            return CC1101_CMD_LEFT;
+        case FLIPPER_CODE_RIGHT_24:
+            return CC1101_CMD_RIGHT;
+        case FLIPPER_CODE_CENTER_24:
+            return CC1101_CMD_CENTER;
+        case FLIPPER_CODE_STOP_24:
+            return CC1101_CMD_STOP;
+        default:
+            return CC1101_CMD_NONE;
+    }
+}
+
+static void CC1101_ApplyResetPulseSequence(void)
+{
+    CC1101_Deselect();
+    HAL_Delay(1U);
+    CC1101_Select();
+    HAL_Delay(1U);
+    CC1101_Deselect();
+    HAL_Delay(1U);
+}
+
+static HAL_StatusTypeDef CC1101_EnterIdleAndFlushRx(void)
+{
+    HAL_StatusTypeDef hal;
+
+    hal = CC1101_Strobe(CC1101_STROBE_SIDLE, NULL);
+    if (hal != HAL_OK) {
+        return hal;
+    }
+    return CC1101_Strobe(CC1101_STROBE_SFRX, NULL);
 }
 
 void CC1101_AttachSpi(SPI_HandleTypeDef* hspi)
@@ -237,12 +272,7 @@ HAL_StatusTypeDef CC1101_InitForFlipperRemote(void)
         return HAL_ERROR;
     }
 
-    CC1101_Deselect();
-    HAL_Delay(1U);
-    CC1101_Select();
-    HAL_Delay(1U);
-    CC1101_Deselect();
-    HAL_Delay(1U);
+    CC1101_ApplyResetPulseSequence();
 
     hal = CC1101_Strobe(CC1101_STROBE_SRES, NULL);
     if (hal != HAL_OK) {
@@ -257,11 +287,7 @@ HAL_StatusTypeDef CC1101_InitForFlipperRemote(void)
         }
     }
 
-    hal = CC1101_Strobe(CC1101_STROBE_SIDLE, NULL);
-    if (hal != HAL_OK) {
-        return hal;
-    }
-    hal = CC1101_Strobe(CC1101_STROBE_SFRX, NULL);
+    hal = CC1101_EnterIdleAndFlushRx();
     if (hal != HAL_OK) {
         return hal;
     }
@@ -277,11 +303,7 @@ HAL_StatusTypeDef CC1101_StartRx(void)
         return HAL_ERROR;
     }
 
-    hal = CC1101_Strobe(CC1101_STROBE_SIDLE, NULL);
-    if (hal != HAL_OK) {
-        return hal;
-    }
-    hal = CC1101_Strobe(CC1101_STROBE_SFRX, NULL);
+    hal = CC1101_EnterIdleAndFlushRx();
     if (hal != HAL_OK) {
         return hal;
     }
@@ -299,12 +321,10 @@ HAL_StatusTypeDef CC1101_FeedEdge(uint8_t level, uint32_t timestamp_us, CC1101_C
     uint32_t code_rev;
     CC1101_Command_t mapped;
 
-    if (out_cmd == NULL) {
-        return HAL_ERROR;
-    }
     *out_cmd = CC1101_CMD_NONE;
 
     if (!s_princeton.has_prev_edge) {
+        /* First edge only establishes baseline timestamp/level. */
         s_princeton.has_prev_edge = 1U;
         s_princeton.prev_level = level;
         s_princeton.prev_ts_us = timestamp_us;
@@ -316,6 +336,7 @@ HAL_StatusTypeDef CC1101_FeedEdge(uint8_t level, uint32_t timestamp_us, CC1101_C
     prior_level = s_princeton.prev_level;
 
     if (dt_us >= PRINCETON_SYNC_GAP_MIN_US) {
+        /* Big idle gap marks frame boundary; start assembling a fresh frame. */
         Princeton_Reset(&s_princeton);
         s_princeton.prev_level = level;
         return HAL_BUSY;
@@ -327,23 +348,21 @@ HAL_StatusTypeDef CC1101_FeedEdge(uint8_t level, uint32_t timestamp_us, CC1101_C
         s_princeton.low_us = dt_us;
     }
 
-    if ((s_princeton.high_us != 0U) && (s_princeton.low_us != 0U)) {
-        s_princeton.has_high_low = 1U;
-    }
-
-    if (Princeton_DecodeSymbol(&s_princeton, &decoded_bit)) {
+    if ((s_princeton.high_us != 0U) &&
+        (s_princeton.low_us != 0U) &&
+        Princeton_DecodeSymbol(&s_princeton, &decoded_bit)) {
         s_princeton.assembled_code <<= 1U;
         s_princeton.assembled_code |= decoded_bit;
         s_princeton.bit_count++;
         s_princeton.high_us = 0U;
         s_princeton.low_us = 0U;
-        s_princeton.has_high_low = 0U;
 
         if (s_princeton.bit_count >= PRINCETON_BITS) {
             code_direct = s_princeton.assembled_code & 0xFFFFFFUL;
             code_rev = Princeton_Reverse24(code_direct);
             mapped = CC1101_MapCodeToCommand(code_direct);
             if (mapped == CC1101_CMD_NONE) {
+                /* Many remotes transmit LSB-first, so try reversed bit order too. */
                 mapped = CC1101_MapCodeToCommand(code_rev);
             }
             Princeton_Reset(&s_princeton);
@@ -351,32 +370,12 @@ HAL_StatusTypeDef CC1101_FeedEdge(uint8_t level, uint32_t timestamp_us, CC1101_C
             s_princeton.prev_level = level;
             return HAL_OK;
         }
-    } else if (s_princeton.has_high_low) {
+    } else if ((s_princeton.high_us != 0U) && (s_princeton.low_us != 0U)) {
         Princeton_Reset(&s_princeton);
     }
 
     s_princeton.prev_level = level;
     return HAL_BUSY;
-}
-
-CC1101_Command_t CC1101_MapCodeToCommand(uint32_t code24)
-{
-    switch (code24 & 0xFFFFFFUL) {
-        case FLIPPER_CODE_FORWARD_24:
-            return CC1101_CMD_FORWARD;
-        case FLIPPER_CODE_BACKWARD_24:
-            return CC1101_CMD_BACKWARD;
-        case FLIPPER_CODE_LEFT_24:
-            return CC1101_CMD_LEFT;
-        case FLIPPER_CODE_RIGHT_24:
-            return CC1101_CMD_RIGHT;
-        case FLIPPER_CODE_CENTER_24:
-            return CC1101_CMD_CENTER;
-        case FLIPPER_CODE_STOP_24:
-            return CC1101_CMD_STOP;
-        default:
-            return CC1101_CMD_NONE;
-    }
 }
 
 const char* CC1101_CommandToString(CC1101_Command_t cmd)

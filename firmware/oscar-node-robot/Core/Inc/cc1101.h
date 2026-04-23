@@ -21,8 +21,8 @@ typedef enum {
 void CC1101_AttachSpi(SPI_HandleTypeDef* hspi);
 HAL_StatusTypeDef CC1101_InitForFlipperRemote(void);
 HAL_StatusTypeDef CC1101_StartRx(void);
+/* Returns HAL_BUSY while assembling a frame and HAL_OK when a frame completes. */
 HAL_StatusTypeDef CC1101_FeedEdge(uint8_t level, uint32_t timestamp_us, CC1101_Command_t* out_cmd);
-CC1101_Command_t CC1101_MapCodeToCommand(uint32_t code24);
 const char* CC1101_CommandToString(CC1101_Command_t cmd);
 
 #ifdef __cplusplus

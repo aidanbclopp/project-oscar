@@ -4,15 +4,15 @@ This firmware supports persistent on-chip logging to internal flash so logs can 
 
 ## Compile Flag
 
-- CMake option: `OSCAR_ENABLE_PERSISTENT_LOGS`
-- Default: `ON`
+- Header flag: `OSCAR_ENABLE_PERSISTENT_LOGS` in `Core/Inc/main.h`
+- Default: `0U`
 
-Configure examples:
+Set in code:
 
-- Enabled (default):
-  - `cmake -S . -B build/Debug`
+- Enabled:
+  - `#define OSCAR_ENABLE_PERSISTENT_LOGS 1U`
 - Disabled:
-  - `cmake -S . -B build/Debug-no-log -DOSCAR_ENABLE_PERSISTENT_LOGS=OFF`
+  - `#define OSCAR_ENABLE_PERSISTENT_LOGS 0U`
 
 When disabled:
 

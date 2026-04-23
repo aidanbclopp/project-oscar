@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* HAL I2C expects 8-bit addresses (7-bit device address shifted left by one). */
 #define BNO055_I2C_ADDR_LOW  (0x28U << 1)
 #define BNO055_I2C_ADDR_HIGH (0x29U << 1)
 
@@ -23,6 +24,7 @@ typedef enum {
 } BNO055_Axis_t;
 
 typedef struct {
+    /* Heading is selected from one Euler axis, then sign/offset adjusted. */
     BNO055_Axis_t heading_axis;
     int8_t heading_sign;
     float heading_offset_deg;

@@ -56,6 +56,8 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(CC1101_CS_GPIO_Port, CC1101_CS_Pin, GPIO_PIN_SET);
   HAL_GPIO_WritePin(BNO055_ON_GPIO_Port, BNO055_ON_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(RADIO_STATUS_GPIO_Port, RADIO_STATUS_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(ENC_STATUS_GPIO_Port, ENC_STATUS_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LED_Pin */
   GPIO_InitStruct.Pin = LED_Pin;
@@ -70,8 +72,8 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(USER_BTN_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : CC1101_CS_Pin BNO055_ON_Pin */
-  GPIO_InitStruct.Pin = CC1101_CS_Pin|BNO055_ON_Pin;
+  /*Configure GPIO pins : RADIO_STATUS_Pin CC1101_CS_Pin BNO055_ON_Pin */
+  GPIO_InitStruct.Pin = RADIO_STATUS_Pin|CC1101_CS_Pin|BNO055_ON_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -88,6 +90,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GDO2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : ENC_STATUS_Pin */
+  GPIO_InitStruct.Pin = ENC_STATUS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(ENC_STATUS_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);

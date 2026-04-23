@@ -29,9 +29,8 @@ typedef struct {
     TIM_HandleTypeDef* htim;
     uint32_t ch_fwd;
     uint32_t ch_bwd;
-    uint32_t ch_en;
+    uint32_t ch_pwm;
     TIM_HandleTypeDef* enc_timer;
-    int32_t last_position;
 } Motor_t;
 
 typedef enum {
@@ -71,6 +70,29 @@ RobotControlStatus_t Robot_MoveDistanceHeadingHold(
     int16_t speed,
     float inches);
 RobotControlStatus_t Robot_RotateToDeltaHeading(
+    Motor_t* motor_l,
+    Motor_t* motor_r,
+    BNO055_t* imu,
+    const HeadingControlConfig_t* cfg,
+    int16_t speed,
+    float delta_degrees);
+
+uint8_t Robot_MotionRunner_IsBusy(void);
+uint8_t Robot_MotionRunner_IsUsingImu(void);
+void Robot_MotionRunner_Stop(void);
+void Robot_MotionRunner_Tick(void);
+RobotControlStatus_t Robot_MotionRunner_RequestMoveEnc(
+    Motor_t* motor_l, Motor_t* motor_r, int16_t speed, float inches);
+RobotControlStatus_t Robot_MotionRunner_RequestRotateEnc(
+    Motor_t* motor_l, Motor_t* motor_r, int16_t speed, float degrees);
+RobotControlStatus_t Robot_MotionRunner_RequestMoveHeadingHold(
+    Motor_t* motor_l,
+    Motor_t* motor_r,
+    BNO055_t* imu,
+    const HeadingControlConfig_t* cfg,
+    int16_t speed,
+    float inches);
+RobotControlStatus_t Robot_MotionRunner_RequestRotateDeltaHeading(
     Motor_t* motor_l,
     Motor_t* motor_r,
     BNO055_t* imu,
