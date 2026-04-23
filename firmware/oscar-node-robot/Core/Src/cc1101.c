@@ -1,41 +1,8 @@
 #include "cc1101.h"
+#include "smartrf_cc1101.h"
 
 #include "main.h"
 #include <stddef.h>
-
-#define CC1101_REG_IOCFG2   0x00U
-#define CC1101_REG_IOCFG0   0x02U
-#define CC1101_REG_FIFOTHR  0x03U
-#define CC1101_REG_PKTCTRL0 0x08U
-#define CC1101_REG_FSCTRL1  0x0BU
-#define CC1101_REG_FREQ2    0x0DU
-#define CC1101_REG_FREQ1    0x0EU
-#define CC1101_REG_FREQ0    0x0FU
-#define CC1101_REG_MDMCFG4  0x10U
-#define CC1101_REG_MDMCFG3  0x11U
-#define CC1101_REG_MDMCFG2  0x12U
-#define CC1101_REG_DEVIATN  0x15U
-#define CC1101_REG_MCSM1    0x17U
-#define CC1101_REG_MCSM0    0x18U
-#define CC1101_REG_FOCCFG   0x19U
-#define CC1101_REG_BSCFG    0x1AU
-#define CC1101_REG_AGCCTRL2 0x1BU
-#define CC1101_REG_AGCCTRL1 0x1CU
-#define CC1101_REG_AGCCTRL0 0x1DU
-#define CC1101_REG_FREND0   0x22U
-#define CC1101_REG_FSCAL3   0x23U
-#define CC1101_REG_FSCAL2   0x24U
-#define CC1101_REG_FSCAL1   0x25U
-#define CC1101_REG_FSCAL0   0x26U
-#define CC1101_REG_TEST2    0x2CU
-#define CC1101_REG_TEST1    0x2DU
-#define CC1101_REG_TEST0    0x2EU
-
-#define CC1101_STROBE_SRES  0x30U
-#define CC1101_STROBE_SRX   0x34U
-#define CC1101_STROBE_SIDLE 0x36U
-#define CC1101_STROBE_SFRX  0x3AU
-#define CC1101_STROBE_SFTX  0x3BU
 
 #define CC1101_SPI_TIMEOUT_MS     20U
 #define CC1101_MISO_WAIT_TIMEOUT  10U
@@ -47,7 +14,6 @@
 #define PRINCETON_LONG_MAX_US          1900U
 #define PRINCETON_SYNC_GAP_MIN_US      4500U
 
-/* These match the .sub files proposed in chat. */
 #define FLIPPER_CODE_FORWARD_24   0xC30111UL
 #define FLIPPER_CODE_BACKWARD_24  0xC30222UL
 #define FLIPPER_CODE_LEFT_24      0xC30333UL
@@ -59,6 +25,11 @@ typedef struct {
     uint8_t reg;
     uint8_t val;
 } CC1101_RegPair_t;
+
+typedef struct {
+    uint32_t code24;
+    CC1101_Command_t cmd;
+} CC1101_CodeCommandMap_t;
 
 static SPI_HandleTypeDef* s_hspi = NULL;
 
@@ -73,6 +44,15 @@ typedef struct {
 } PrincetonDecoderState_t;
 
 static PrincetonDecoderState_t s_princeton = {0};
+
+static const CC1101_CodeCommandMap_t k_code_command_map[] = {
+    {FLIPPER_CODE_FORWARD_24, CC1101_CMD_FORWARD},
+    {FLIPPER_CODE_BACKWARD_24, CC1101_CMD_BACKWARD},
+    {FLIPPER_CODE_LEFT_24, CC1101_CMD_LEFT},
+    {FLIPPER_CODE_RIGHT_24, CC1101_CMD_RIGHT},
+    {FLIPPER_CODE_CENTER_24, CC1101_CMD_CENTER},
+    {FLIPPER_CODE_STOP_24, CC1101_CMD_STOP}
+};
 
 static HAL_StatusTypeDef CC1101_WaitMisoLow(uint32_t timeout_ms)
 {
@@ -190,22 +170,16 @@ static uint8_t Princeton_DecodeSymbol(PrincetonDecoderState_t* st, uint8_t* out_
 
 static CC1101_Command_t CC1101_MapCodeToCommand(uint32_t code24)
 {
-    switch (code24 & 0xFFFFFFUL) {
-        case FLIPPER_CODE_FORWARD_24:
-            return CC1101_CMD_FORWARD;
-        case FLIPPER_CODE_BACKWARD_24:
-            return CC1101_CMD_BACKWARD;
-        case FLIPPER_CODE_LEFT_24:
-            return CC1101_CMD_LEFT;
-        case FLIPPER_CODE_RIGHT_24:
-            return CC1101_CMD_RIGHT;
-        case FLIPPER_CODE_CENTER_24:
-            return CC1101_CMD_CENTER;
-        case FLIPPER_CODE_STOP_24:
-            return CC1101_CMD_STOP;
-        default:
-            return CC1101_CMD_NONE;
+    uint32_t i;
+    uint32_t code = code24 & 0xFFFFFFUL;
+    uint32_t count = (uint32_t)(sizeof(k_code_command_map) / sizeof(k_code_command_map[0]));
+
+    for (i = 0U; i < count; i++) {
+        if (k_code_command_map[i].code24 == code) {
+            return k_code_command_map[i].cmd;
+        }
     }
+    return CC1101_CMD_NONE;
 }
 
 static void CC1101_ApplyResetPulseSequence(void)
@@ -237,33 +211,33 @@ void CC1101_AttachSpi(SPI_HandleTypeDef* hspi)
 HAL_StatusTypeDef CC1101_InitForFlipperRemote(void)
 {
     static const CC1101_RegPair_t reg_init[] = {
-        {CC1101_REG_IOCFG2, 0x2EU},
-        {CC1101_REG_IOCFG0, 0x0DU},   /* Asynchronous serial data output. */
-        {CC1101_REG_FIFOTHR, 0x47U},
-        {CC1101_REG_PKTCTRL0, 0x32U}, /* Async serial mode, infinite packet. */
-        {CC1101_REG_FSCTRL1, 0x06U},
-        {CC1101_REG_FREQ2, 0x10U},    /* 433.92 MHz nominal profile. */
-        {CC1101_REG_FREQ1, 0xB0U},
-        {CC1101_REG_FREQ0, 0x71U},
-        {CC1101_REG_MDMCFG4, 0xF5U},
-        {CC1101_REG_MDMCFG3, 0xB3U},
-        {CC1101_REG_MDMCFG2, 0x30U},  /* ASK/OOK, no sync/preamble detect. */
-        {CC1101_REG_DEVIATN, 0x15U},
-        {CC1101_REG_MCSM1, 0x3CU},
-        {CC1101_REG_MCSM0, 0x18U},
-        {CC1101_REG_FOCCFG, 0x16U},
-        {CC1101_REG_BSCFG, 0x6CU},
-        {CC1101_REG_AGCCTRL2, 0x43U},
-        {CC1101_REG_AGCCTRL1, 0x40U},
-        {CC1101_REG_AGCCTRL0, 0x91U},
-        {CC1101_REG_FREND0, 0x11U},
-        {CC1101_REG_FSCAL3, 0xE9U},
-        {CC1101_REG_FSCAL2, 0x2AU},
-        {CC1101_REG_FSCAL1, 0x00U},
-        {CC1101_REG_FSCAL0, 0x1FU},
-        {CC1101_REG_TEST2, 0x81U},
-        {CC1101_REG_TEST1, 0x35U},
-        {CC1101_REG_TEST0, 0x09U}
+        {CC1101_REG_IOCFG2, SMARTRF_SETTING_IOCFG2},
+        {CC1101_REG_IOCFG0, SMARTRF_SETTING_IOCFG0},   /* Asynchronous serial data output. */
+        {CC1101_REG_FIFOTHR, SMARTRF_SETTING_FIFOTHR},
+        {CC1101_REG_PKTCTRL0, SMARTRF_SETTING_PKTCTRL0}, /* Async serial mode, infinite packet. */
+        {CC1101_REG_FSCTRL1, SMARTRF_SETTING_FSCTRL1},
+        {CC1101_REG_FREQ2, SMARTRF_SETTING_FREQ2},    /* 433.92 MHz nominal profile. */
+        {CC1101_REG_FREQ1, SMARTRF_SETTING_FREQ1},
+        {CC1101_REG_FREQ0, SMARTRF_SETTING_FREQ0},
+        {CC1101_REG_MDMCFG4, SMARTRF_SETTING_MDMCFG4},
+        {CC1101_REG_MDMCFG3, SMARTRF_SETTING_MDMCFG3},
+        {CC1101_REG_MDMCFG2, SMARTRF_SETTING_MDMCFG2},  /* ASK/OOK, no sync/preamble detect. */
+        {CC1101_REG_DEVIATN, SMARTRF_SETTING_DEVIATN},
+        {CC1101_REG_MCSM1, SMARTRF_SETTING_MCSM1},
+        {CC1101_REG_MCSM0, SMARTRF_SETTING_MCSM0},
+        {CC1101_REG_FOCCFG, SMARTRF_SETTING_FOCCFG},
+        {CC1101_REG_BSCFG, SMARTRF_SETTING_BSCFG},
+        {CC1101_REG_AGCCTRL2, SMARTRF_SETTING_AGCCTRL2},
+        {CC1101_REG_AGCCTRL1, SMARTRF_SETTING_AGCCTRL1},
+        {CC1101_REG_AGCCTRL0, SMARTRF_SETTING_AGCCTRL0},
+        {CC1101_REG_FREND0, SMARTRF_SETTING_FREND0},
+        {CC1101_REG_FSCAL3, SMARTRF_SETTING_FSCAL3},
+        {CC1101_REG_FSCAL2, SMARTRF_SETTING_FSCAL2},
+        {CC1101_REG_FSCAL1, SMARTRF_SETTING_FSCAL1},
+        {CC1101_REG_FSCAL0, SMARTRF_SETTING_FSCAL0},
+        {CC1101_REG_TEST2, SMARTRF_SETTING_TEST2},
+        {CC1101_REG_TEST1, SMARTRF_SETTING_TEST1},
+        {CC1101_REG_TEST0, SMARTRF_SETTING_TEST0}
     };
     uint32_t i;
     HAL_StatusTypeDef hal;

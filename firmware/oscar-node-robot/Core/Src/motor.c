@@ -48,7 +48,7 @@ static int32_t Motor_GetSignedDeltaTicks(Motor_t* motor, int16_t start_ticks)
 
     curr_ticks_u = (uint16_t)__HAL_TIM_GET_COUNTER(motor->enc_timer);
     start_ticks_u = (uint16_t)start_ticks;
-    /* Cast to int16 keeps encoder wraparound math sane for short control windows. */
+    /* Signed wraparound keeps short-window encoder deltas consistent. */
     wrapped_delta = (int16_t)(curr_ticks_u - start_ticks_u);
     return (int32_t)wrapped_delta;
 }
@@ -130,10 +130,6 @@ static int16_t Motor_ComputeRotateCommand(const HeadingControlConfig_t* cfg, int
 
 void HeadingControl_GetDefaultConfig(HeadingControlConfig_t* cfg)
 {
-    if (cfg == NULL) {
-        return;
-    }
-
     cfg->kp = HEADING_HOLD_KP;
     cfg->kd = HEADING_HOLD_KD;
     cfg->corr_max = HEADING_CORR_MAX;
@@ -252,14 +248,12 @@ RobotControlStatus_t Robot_MoveDistanceHeadingHold(
     uint32_t start_ms;
     uint32_t last_log_ms = 0U;
 
-    if ((motor_l == NULL) || (motor_r == NULL) || (imu == NULL) || (cfg == NULL) || (speed == 0)) {
-        printf("[CTRL] move-hold invalid params\r\n");
-        return ROBOT_CTRL_PARAM_ERROR;
+    if (speed == 0) {
+        return ROBOT_CTRL_OK;
     }
 
     target_ticks = (int32_t)(fabsf(inches) * TICKS_PER_INCH);
     if (target_ticks <= 0) {
-        printf("[CTRL] move-hold skipped target=0\r\n");
         return ROBOT_CTRL_OK;
     }
 
@@ -299,7 +293,7 @@ RobotControlStatus_t Robot_MoveDistanceHeadingHold(
         now_ms = HAL_GetTick();
         dt_s = Motor_GetDeltaSeconds(now_ms, prev_tick_ms);
 
-        heading_error = NormalizeAngleErrorDeg(target_heading - curr_heading);
+        heading_error = NormalizeAngleErrorDeg(curr_heading - target_heading);
         correction = (cfg->kp * heading_error) + (cfg->kd * ((heading_error - prev_error) / dt_s));
         correction *= Motor_GetHeadingCorrectionSign(commanded_speed);
         correction = ClampFloat(correction, -cfg->corr_max, cfg->corr_max);
@@ -360,12 +354,10 @@ RobotControlStatus_t Robot_RotateToDeltaHeading(
     int16_t max_turn_speed;
     uint32_t last_log_ms = 0U;
 
-    if ((motor_l == NULL) || (motor_r == NULL) || (imu == NULL) || (cfg == NULL) || (speed == 0)) {
-        printf("[CTRL] rotate invalid params\r\n");
-        return ROBOT_CTRL_PARAM_ERROR;
+    if (speed == 0) {
+        return ROBOT_CTRL_OK;
     }
     if (fabsf(delta_degrees) <= CTRL_ZERO_DELTA_EPS_DEG) {
-        printf("[CTRL] rotate skipped delta=0\r\n");
         return ROBOT_CTRL_OK;
     }
 
@@ -523,8 +515,8 @@ RobotControlStatus_t Robot_MotionRunner_RequestMoveEnc(
     if (s_motion.mode != MOTION_IDLE) {
         return ROBOT_CTRL_PARAM_ERROR;
     }
-    if ((motor_l == NULL) || (motor_r == NULL) || (speed == 0)) {
-        return ROBOT_CTRL_PARAM_ERROR;
+    if (speed == 0) {
+        return ROBOT_CTRL_OK;
     }
     target_ticks = (int32_t)(fabsf(inches) * TICKS_PER_INCH);
     if (target_ticks <= 0) {
@@ -550,9 +542,6 @@ RobotControlStatus_t Robot_MotionRunner_RequestRotateEnc(
     int32_t target_ticks;
     int16_t turn_speed;
     if (s_motion.mode != MOTION_IDLE) {
-        return ROBOT_CTRL_PARAM_ERROR;
-    }
-    if ((motor_l == NULL) || (motor_r == NULL)) {
         return ROBOT_CTRL_PARAM_ERROR;
     }
     turn_speed = (int16_t)abs(speed);
@@ -591,9 +580,8 @@ RobotControlStatus_t Robot_MotionRunner_RequestMoveHeadingHold(
     if (s_motion.mode != MOTION_IDLE) {
         return ROBOT_CTRL_PARAM_ERROR;
     }
-    if ((motor_l == NULL) || (motor_r == NULL) || (imu == NULL) || (cfg == NULL) || (speed == 0)) {
-        printf("[CTRL] motion req move-hold invalid params\r\n");
-        return ROBOT_CTRL_PARAM_ERROR;
+    if (speed == 0) {
+        return ROBOT_CTRL_OK;
     }
     s_motion.target_ticks = (int32_t)(fabsf(inches) * TICKS_PER_INCH);
     if (s_motion.target_ticks <= 0) {
@@ -639,9 +627,8 @@ RobotControlStatus_t Robot_MotionRunner_RequestRotateDeltaHeading(
     if (s_motion.mode != MOTION_IDLE) {
         return ROBOT_CTRL_PARAM_ERROR;
     }
-    if ((motor_l == NULL) || (motor_r == NULL) || (imu == NULL) || (cfg == NULL) || (speed == 0)) {
-        printf("[CTRL] motion req rotate invalid params\r\n");
-        return ROBOT_CTRL_PARAM_ERROR;
+    if (speed == 0) {
+        return ROBOT_CTRL_OK;
     }
     if (fabsf(delta_degrees) <= CTRL_ZERO_DELTA_EPS_DEG) {
         return ROBOT_CTRL_OK;
@@ -718,7 +705,7 @@ void Robot_MotionRunner_Tick(void)
 
             dt_s = Motor_GetDeltaSeconds(now_ms, s_motion.prev_tick_ms);
 
-            heading_error = NormalizeAngleErrorDeg(s_motion.target_heading - curr_heading);
+            heading_error = NormalizeAngleErrorDeg(curr_heading - s_motion.target_heading);
             correction = (s_motion.cfg->kp * heading_error) +
                          (s_motion.cfg->kd * ((heading_error - s_motion.prev_error) / dt_s));
             correction *= Motor_GetHeadingCorrectionSign(s_motion.commanded_speed);
